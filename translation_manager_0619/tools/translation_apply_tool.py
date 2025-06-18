@@ -1,3 +1,5 @@
+# tools/translate/translation_apply_tool.py (수정 후)
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
@@ -13,129 +15,196 @@ if project_root not in sys.path:
 
 from ui.common_components import ScrollableCheckList, LoadingPopup
 from tools.translation_apply_manager import TranslationApplyManager
+import openpyxl
 
 class TranslationApplyTool(tk.Frame):
     def __init__(self, parent, excluded_files):
         super().__init__(parent)
         self.parent = parent
-        
-        # 번역 적용 로직 매니저
         self.translation_apply_manager = TranslationApplyManager(self)
         
-        # UI에서 사용할 변수
+        # --- UI 변수 선언 ---
+        # DB 소스
         self.translation_db_var = tk.StringVar()
+        # 엑셀 소스
+        self.excel_source_path_var = tk.StringVar()
+        self.excel_sheet_var = tk.StringVar()
+        # 공통
         self.original_folder_var = tk.StringVar()
         self.record_date_var = tk.BooleanVar(value=True)
         self.available_languages = ["KR", "EN", "CN", "TW", "TH"]
         self.apply_lang_vars = {}
 
-        # 내부 데이터
+        # --- 내부 데이터 ---
         self.original_files = []
         self.excluded_files = excluded_files
         
-        # UI 구성
         self.setup_ui()
 
     def setup_ui(self):
-        """번역 적용 탭 UI 구성"""
-        # 번역 파일 선택 부분
-        trans_frame = ttk.LabelFrame(self, text="번역 DB 선택")
-        trans_frame.pack(fill="x", padx=5, pady=5)
+        """번역 적용 탭 UI 구성 (좌/우 분할 레이아웃)"""
+
+        # --- 상단 소스 선택 프레임 (좌/우 분할) ---
+        source_selection_frame = ttk.Frame(self)
+        source_selection_frame.pack(fill="x", padx=5, pady=5)
+        source_selection_frame.columnconfigure(0, weight=1)
+        source_selection_frame.columnconfigure(1, weight=1)
+
+        # --- 좌측 프레임: 번역 DB 선택 ---
+        db_frame = ttk.LabelFrame(source_selection_frame, text="옵션 1: 번역 DB 선택")
+        db_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         
-        ttk.Label(trans_frame, text="번역 DB:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        ttk.Entry(trans_frame, textvariable=self.translation_db_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Button(trans_frame, text="찾아보기", 
-                command=self.select_translation_db_file).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Label(db_frame, text="번역 DB:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        db_entry = ttk.Entry(db_frame, textvariable=self.translation_db_var)
+        db_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(db_frame, text="찾아보기", command=self.select_translation_db_file).grid(row=0, column=2, padx=5, pady=5)
+        db_frame.columnconfigure(1, weight=1)
+
+        # --- 우측 프레임: 번역 엑셀 파일 선택 ---
+        excel_frame = ttk.LabelFrame(source_selection_frame, text="옵션 2: 번역 엑셀 파일 선택")
+        excel_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+
+        ttk.Label(excel_frame, text="엑셀 파일:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        excel_entry = ttk.Entry(excel_frame, textvariable=self.excel_source_path_var)
+        excel_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(excel_frame, text="찾아보기", command=self.select_excel_source_file).grid(row=0, column=2, padx=5, pady=5)
         
-        ttk.Label(trans_frame, text="원본 폴더:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        ttk.Entry(trans_frame, textvariable=self.original_folder_var, width=50).grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Button(trans_frame, text="찾아보기", 
-                command=self.select_original_folder).grid(row=1, column=2, padx=5, pady=5)
-        ttk.Button(trans_frame, text="파일 검색", 
-                command=self.search_original_files).grid(row=1, column=3, padx=5, pady=5)
+        ttk.Label(excel_frame, text="시트 선택:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.sheet_combobox = ttk.Combobox(excel_frame, textvariable=self.excel_sheet_var, state="readonly")
+        self.sheet_combobox.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+        excel_frame.columnconfigure(1, weight=1)
+
+        # --- 원본 파일 및 옵션 (공통 영역) ---
+        original_files_frame = ttk.LabelFrame(self, text="번역을 적용할 원본 파일")
+        original_files_frame.pack(fill="x", padx=5, pady=5)
         
-        trans_frame.columnconfigure(1, weight=1)
+        ttk.Label(original_files_frame, text="원본 폴더:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ttk.Entry(original_files_frame, textvariable=self.original_folder_var).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(original_files_frame, text="찾아보기", command=self.select_original_folder).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(original_files_frame, text="파일 검색", command=self.search_original_files).grid(row=0, column=3, padx=5, pady=5)
+        original_files_frame.columnconfigure(1, weight=1)
         
-        # 파일 목록 표시
-        files_frame = ttk.LabelFrame(self, text="원본 파일 목록")
-        files_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        self.original_files_list = ScrollableCheckList(files_frame, width=700, height=150)
+        files_list_frame = ttk.LabelFrame(self, text="원본 파일 목록")
+        files_list_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.original_files_list = ScrollableCheckList(files_list_frame)
         self.original_files_list.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # 옵션 설정
         options_frame = ttk.LabelFrame(self, text="적용 옵션")
         options_frame.pack(fill="x", padx=5, pady=5)
-        
-        # 언어 선택 - 2행 3열로 배치
         for i, lang in enumerate(self.available_languages):
             var = tk.BooleanVar(value=True if lang in ["CN", "TW"] else False)
             self.apply_lang_vars[lang] = var
-            ttk.Checkbutton(options_frame, text=lang, variable=var).grid(
-                row=i // 3, column=i % 3, padx=20, pady=5, sticky="w")
+            ttk.Checkbutton(options_frame, text=lang, variable=var).grid(row=i // 5, column=i % 5, padx=10, pady=5, sticky="w")
+        ttk.Checkbutton(options_frame, text="번역 적용 표시", variable=self.record_date_var).grid(row=1, column=0, columnspan=5, padx=5, pady=5, sticky="w")
         
-        # 언어 매핑 정보 추가
-        ttk.Label(options_frame, text="언어 매핑: ZH → CN (자동 처리)", 
-                font=("", 9, "italic")).grid(
-            row=2, column=1, columnspan=2, padx=5, pady=1, sticky="w")
-
-        # 번역 적용일 기록 옵션
-        ttk.Checkbutton(options_frame, text="번역 적용 표시 (#번역적용 컬럼)", 
-                    variable=self.record_date_var).grid(
-            row=2, column=0, columnspan=3, padx=5, pady=5, sticky="w")
-        
-        # 작업 실행 버튼
         action_frame = ttk.Frame(self)
         action_frame.pack(fill="x", padx=5, pady=5)
-        
         ttk.Button(action_frame, text="번역 적용", command=self.apply_translation).pack(side="right", padx=5, pady=5)
-        ttk.Button(action_frame, text="번역 DB 캐시 로드", command=self.load_translation_cache).pack(side="right", padx=5, pady=5)
+        ttk.Button(action_frame, text="번역 데이터 로드", command=self.load_translation_data).pack(side="right", padx=5, pady=5)
         
-        # 로그 표시 영역
         log_frame = ttk.LabelFrame(self, text="작업 로그")
         log_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
         self.log_text = tk.Text(log_frame, wrap="word")
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
-        
         scrollbar.pack(side="right", fill="y")
         self.log_text.pack(fill="both", expand=True)
         
-        # 상태와 진행 표시
         status_frame = ttk.Frame(self)
         status_frame.pack(fill="x", padx=5, pady=5)
-        
         self.status_label_apply = ttk.Label(status_frame, text="대기 중...")
         self.status_label_apply.pack(side="left", padx=5)
-        
-        self.progress_bar = ttk.Progressbar(status_frame, length=400, mode="determinate")
-        self.progress_bar.pack(side="right", fill="x", expand=True, padx=5)
 
-    def load_excluded_files(self):
+    def select_excel_source_file(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Excel 파일", "*.xlsx"), ("모든 파일", "*.*")],
+            title="번역 엑셀 파일 선택", parent=self
+        )
+        if file_path:
+            self.excel_source_path_var.set(file_path)
+            self.translation_db_var.set("") # 다른 옵션 초기화
+            self.excel_sheet_var.set("")
+            self.sheet_combobox.set('')
+            self.sheet_combobox['values'] = []
+            
+            # 백그라운드 스레드에서 시트 목록 로드
+            threading.Thread(target=self._populate_sheets, args=(file_path,), daemon=True).start()
+
+    def _populate_sheets(self, file_path):
+        """엑셀 파일에서 시트 목록을 읽어 콤보박스를 채웁니다."""
         try:
-            with open("제외 파일 목록.txt", "r", encoding="utf-8") as f:
-                return [line.strip() for line in f.readlines() if line.strip()]
-        except Exception:
-            return []
+            self.after(0, lambda: self.sheet_combobox.set("시트 목록 읽는 중..."))
+            workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            sheet_names = workbook.sheetnames
+            
+            def update_combobox():
+                self.sheet_combobox['values'] = sheet_names
+                if sheet_names:
+                    self.sheet_combobox.set(sheet_names[0]) # 첫 번째 시트를 기본값으로
+                self.sheet_combobox.config(state="readonly")
 
+            self.after(0, update_combobox)
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("오류", f"엑셀 파일 시트를 읽는 중 오류 발생: {e}", parent=self))
+            self.after(0, lambda: self.sheet_combobox.set("시트 읽기 실패"))
+
+    def load_translation_data(self):
+        """DB 또는 엑셀 파일로부터 번역 데이터를 로드하는 분기 처리"""
+        db_path = self.translation_db_var.get()
+        excel_path = self.excel_source_path_var.get()
+
+        if db_path:
+            self.load_from_db(db_path)
+        elif excel_path:
+            sheet_name = self.excel_sheet_var.get()
+            if not sheet_name or sheet_name.startswith("시트"):
+                messagebox.showwarning("경고", "데이터를 읽어올 시트를 선택하세요.", parent=self)
+                return
+            self.load_from_excel(excel_path, sheet_name)
+        else:
+            messagebox.showwarning("경고", "번역 DB 또는 엑셀 파일을 선택하세요.", parent=self)
+
+    def load_from_db(self, db_path):
+        if not os.path.isfile(db_path):
+            messagebox.showwarning("경고", "유효한 번역 DB 파일을 선택하세요.", parent=self)
+            return
+            
+        self.log_text.insert(tk.END, "번역 DB 캐싱 중...\n")
+        loading_popup = LoadingPopup(self, "DB 캐싱 중", "번역 데이터 캐싱 중...")
+        
+        def task():
+            result = self.translation_apply_manager.load_translation_cache_from_db(db_path)
+            self.after(0, lambda: self.process_cache_load_result(result, loading_popup))
+        
+        threading.Thread(target=task, daemon=True).start()
+
+    def load_from_excel(self, file_path, sheet_name):
+        self.log_text.insert(tk.END, f"'{os.path.basename(file_path)}' 파일의 '{sheet_name}' 시트 캐싱 중...\n")
+        loading_popup = LoadingPopup(self, "엑셀 캐싱 중", "번역 데이터 캐싱 중...")
+        
+        def task():
+            result = self.translation_apply_manager.load_translation_cache_from_excel(file_path, sheet_name)
+            self.after(0, lambda: self.process_cache_load_result(result, loading_popup))
+        
+        threading.Thread(target=task, daemon=True).start()
+   
+   
     def select_translation_db_file(self):
         file_path = filedialog.askopenfilename(
             filetypes=[("DB 파일", "*.db"), ("모든 파일", "*.*")],
-            title="번역 DB 선택",
-            parent=self
+            title="번역 DB 선택", parent=self
         )
         if file_path:
             self.translation_db_var.set(file_path)
-            self.after(100, self.focus_force)
-            self.after(100, self.lift)
+            self.excel_source_path_var.set("") # 다른 옵션 초기화
+            self.excel_sheet_var.set("")
+            self.sheet_combobox.set('')
+            self.sheet_combobox['values'] = []
 
     def select_original_folder(self):
         folder = filedialog.askdirectory(title="원본 파일 폴더 선택", parent=self)
         if folder:
             self.original_folder_var.set(folder)
-            self.after(100, self.focus_force)
-            self.after(100, self.lift)
 
     def search_original_files(self):
         folder = self.original_folder_var.get()
@@ -146,11 +215,11 @@ class TranslationApplyTool(tk.Frame):
         self.original_files_list.clear()
         self.original_files = []
         
-        for root, _, files in os.walk(folder):
+        for root_dir, _, files in os.walk(folder):
             for file in files:
                 if file.startswith("String") and file.endswith(".xlsx") and not file.startswith("~$"):
                     if file not in self.excluded_files:
-                        file_path = os.path.join(root, file)
+                        file_path = os.path.join(root_dir, file)
                         self.original_files.append((file, file_path))
                         self.original_files_list.add_item(file, checked=True)
         
@@ -189,10 +258,9 @@ class TranslationApplyTool(tk.Frame):
     def process_cache_load_result(self, result, loading_popup):
         loading_popup.close()
         
-        if "status" in result and result["status"] == "error":
-            self.log_text.insert(tk.END, f"캐싱 중 오류 발생: {result['message']}\n")
-            self.status_label_apply.config(text="오류 발생")
-            messagebox.showerror("오류", f"DB 캐싱 중 오류 발생: {result['message']}", parent=self)
+        if result["status"] == "error":
+            messagebox.showerror("오류", f"캐싱 중 오류 발생: {result['message']}", parent=self)
+            self.log_text.insert(tk.END, f"캐싱 실패: {result['message']}\n")
             return
             
         self.translation_apply_manager.translation_cache = result["translation_cache"]
@@ -228,7 +296,7 @@ class TranslationApplyTool(tk.Frame):
 
     def apply_translation(self):
         if not hasattr(self.translation_apply_manager, 'translation_cache') or not self.translation_apply_manager.translation_cache:
-            messagebox.showwarning("경고", "먼저 번역 DB를 캐시에 로드하세요.", parent=self)
+            messagebox.showwarning("경고", "먼저 '번역 데이터 로드'를 실행하세요.", parent=self)
             return
             
         selected_files = self.original_files_list.get_checked_items()
@@ -316,15 +384,14 @@ class TranslationApplyTool(tk.Frame):
         thread = threading.Thread(target=apply_translations, daemon=True)
         thread.start()
             
-    def process_translation_apply_result(self, total_updated, processed_count, error_count, loading_popup, problem_files):
+    def process_translation_apply_result(self, results, loading_popup):
         loading_popup.close()
-            
-        self.log_text.insert(tk.END, f"\n번역 적용 작업 완료!\n")
-        self.log_text.insert(tk.END, f"파일 처리: {processed_count}/{len(self.original_files_list.get_checked_items())} (오류: {error_count})\n")
-        self.log_text.insert(tk.END, f"총 {total_updated}개 항목이 업데이트되었습니다.\n")
-            
+        total_updated = results['total_updated']
+        self.log_text.insert(tk.END, f"\n번역 적용 작업 완료!\n총 {total_updated}개 항목이 업데이트되었습니다.\n")
         self.status_label_apply.config(text=f"번역 적용 완료 - {total_updated}개 항목")
         
+        messagebox.showinfo("완료", f"번역 적용 작업이 완료되었습니다.\n총 {total_updated}개 항목이 업데이트되었습니다.", parent=self)
+
         problem_summary = []
         total_problem_files = 0
         

@@ -2,25 +2,128 @@ import os
 import time
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+import pandas as pd
+import sqlite3
 
 class TranslationApplyManager:
     def __init__(self, parent_window=None):
-        self.parent = parent_window
+        self.parent_ui = parent_ui
         self.translation_cache = {}
         self.translation_file_cache = {}
         self.translation_sheet_cache = {}
         self.duplicate_ids = {}
-        self.kr_reverse_cache = {}  # KR 텍스트를 키로 하는 역방향 캐시
+        self.kr_reverse_cache = {}
         
     def log_message(self, message):
-        """로그 메시지 출력 (메인 창의 로그 텍스트에 추가)"""
-        if self.parent and hasattr(self.parent, 'log_text'):
-            self.parent.log_text.insert("end", f"{message}\n")
-            self.parent.log_text.see("end")
-            self.parent.root.update_idletasks()
+        """UI의 로그 텍스트 영역에 메시지를 기록합니다."""
+        if self.parent_ui and hasattr(self.parent_ui, 'log_text'):
+            self.parent_ui.log_text.insert(tk.END, f"{message}\n")
+            self.parent_ui.log_text.see(tk.END)
+            self.parent_ui.update_idletasks()
         else:
             print(message)
+
+    def load_translation_cache_from_excel(self, file_path, sheet_name):
+        """엑셀 파일의 특정 시트에서 번역 데이터를 읽어 캐시를 생성합니다."""
+        try:
+            self.log_message(f"⚙️ 엑셀 파일 로딩 시작: {os.path.basename(file_path)} - 시트: {sheet_name}")
+            header_row_index = self._find_header_row(file_path, sheet_name)
+            if header_row_index is None:
+                message = "지정한 시트의 1~6행에서 'STRING_ID' 컬럼을 찾을 수 없습니다."
+                self.log_message(f"❌ {message}")
+                return {"status": "error", "message": message}
+            
+            df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row_index, dtype=str)
+            df.fillna('', inplace=True)
+
+            df.columns = [str(col).lower() for col in df.columns]
+            
+            if 'string_id' not in df.columns:
+                message = "엑셀 시트에 'string_id' 컬럼이 없습니다."
+                self.log_message(f"❌ {message}")
+                return {"status": "error", "message": message}
+
+            self.build_cache_from_dataframe(df)
+
+            # UI가 필요로 하는 모든 캐시 정보를 포함하여 반환
+            return {
+                "status": "success",
+                "source_type": "Excel",
+                "translation_cache": self.translation_cache,
+                "translation_file_cache": self.translation_file_cache,
+                "translation_sheet_cache": self.translation_sheet_cache,
+                "duplicate_ids": self.duplicate_ids,
+                "kr_reverse_cache": self.kr_reverse_cache,
+                "id_count": len(self.translation_cache)
+            }
+        except Exception as e:
+            self.log_message(f"❌ 엑셀 캐시 로딩 오류: {str(e)}")
+            return {"status": "error", "message": str(e)}
         
+    def _find_header_row(self, file_path, sheet_name):
+        """엑셀 시트의 1~6행에서 'string_id'를 포함하는 헤더 행을 찾습니다."""
+        for i in range(6):
+            try:
+                df_peek = pd.read_excel(file_path, sheet_name=sheet_name, header=i, nrows=0)
+                if 'string_id' in [str(col).lower() for col in df_peek.columns]:
+                    self.log_message(f"✅ 헤더 행 발견: {i + 1}번째 행")
+                    return i
+            except Exception:
+                continue
+        return None
+    
+    def build_cache_from_dataframe(self, df):
+        """Pandas DataFrame으로부터 정교한 다중 캐시를 구축합니다."""
+        self.translation_cache = {}
+        self.translation_file_cache = {}
+        self.translation_sheet_cache = {}
+        self.duplicate_ids = {}
+        self.kr_reverse_cache = {}
+        
+        self.log_message(f"🔧 데이터프레임으로부터 캐시 구축 시작: {len(df)}개 행")
+
+        for _, row in df.iterrows():
+            string_id = str(row.get('string_id', '')).strip()
+            if not string_id:
+                continue
+
+            file_name = str(row.get('filename', row.get('file_name', ''))).strip()
+            sheet_name = str(row.get('sheetname', row.get('sheet_name', ''))).strip()
+
+            norm_file_name = file_name.lower()
+            norm_sheet_name = sheet_name.lower()
+
+            data = {
+                "kr": str(row.get("kr", "")),
+                "en": str(row.get("en", "")),
+                "cn": str(row.get("cn", "")),
+                "tw": str(row.get("tw", "")),
+                "th": str(row.get("th", "")),
+                "file_name": file_name,
+                "sheet_name": sheet_name
+            }
+            
+            if norm_file_name:
+                self.translation_file_cache.setdefault(norm_file_name, {})[string_id] = data
+            
+            if norm_sheet_name:
+                self.translation_sheet_cache.setdefault(norm_sheet_name, {})[string_id] = data
+            
+            self.translation_cache[string_id] = data
+
+            if string_id not in self.duplicate_ids:
+                self.duplicate_ids[string_id] = []
+            self.duplicate_ids[string_id].append(file_name)
+
+            kr_text = data["kr"].strip()
+            if kr_text and kr_text not in self.kr_reverse_cache:
+                kr_cache_data = data.copy()
+                kr_cache_data['string_id'] = string_id
+                self.kr_reverse_cache[kr_text] = kr_cache_data
+        
+        self.log_message(f"🔧 캐시 구성 완료 (ID: {len(self.translation_cache)}, 파일: {len(self.translation_file_cache)}, 시트: {len(self.translation_sheet_cache)}, KR역방향: {len(self.kr_reverse_cache)})")
+        
+             
     def find_string_id_position(self, worksheet):
         """STRING_ID 위치 찾기"""
         for row in range(2, 6):  # 2행부터 5행까지 검색
@@ -724,199 +827,36 @@ class TranslationApplyManager:
             
         return external_links[:10]  # 최대 10개만 반환
 
-
-
-    def load_translation_cache(self, db_path):
-        """번역 DB를 메모리에 캐싱"""
-        import sqlite3
-        
+    def load_translation_cache_from_db(self, db_path):
+        """데이터베이스에서 번역 데이터를 읽어 캐시를 생성합니다."""
         try:
-            # DB 연결
+            self.log_message(f"⚙️ DB 로딩 시작: {db_path}")
             conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
-            # 🔧 DB 파일 확인: {db_path}")
-            
-            # 테이블 목록 확인
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = cursor.fetchall()
-            self.log_message(f"🔧 DB 테이블 목록: {[table[0] for table in tables]}")
-            
-            # translation_data 테이블 구조 확인
-            cursor.execute("PRAGMA table_info(translation_data);")
-            columns = cursor.fetchall()
-            self.log_message(f"🔧 translation_data 테이블 컬럼: {[(col[1], col[2]) for col in columns]}")
-            
-            # 데이터 로드
-            cursor.execute("SELECT * FROM translation_data LIMIT 5")
-            sample_rows = cursor.fetchall()
-            self.log_message(f"🔧 샘플 데이터 (첫 5행):")
-            for i, row in enumerate(sample_rows):
-                # 🔧 sqlite3.Row 객체를 딕셔너리로 변환
-                row_dict = dict(row)
-                file_name = row_dict.get('file_name', 'N/A')
-                sheet_name = row_dict.get('sheet_name', 'N/A') 
-                string_id = row_dict.get('string_id', 'N/A')
-                self.log_message(f"  행 {i+1}: file='{file_name}', sheet='{sheet_name}', id='{string_id}'")
-            
-            # 전체 데이터 로드
-            cursor.execute("SELECT * FROM translation_data")
-            rows = cursor.fetchall()
-            
-            # 캐시 초기화
-            self.translation_cache = {}              # STRING_ID만 (3순위)
-            self.translation_file_cache = {}         # 파일명 + STRING_ID (1순위)
-            self.translation_sheet_cache = {}        # 시트명 + STRING_ID (2순위)
-            self.duplicate_ids = {}                  # 중복 STRING_ID 추적용
-            self.kr_reverse_cache = {}               # KR 텍스트를 키로 하는 역방향 캐시 (스마트 번역용)
-            
-            # 🔧 캐시 로딩 상세 로그
-            self.log_message(f"🔧 번역 DB 캐시 로딩 시작: {len(rows)}개 행")
-            
-            # 🔧 테스트할 특정 ID들
-            test_ids = ['8004001', '4000001', '4000201']
-            test_id_found = {tid: False for tid in test_ids}
-            
-            for idx, row in enumerate(rows):
-                # 🔧 sqlite3.Row 객체를 딕셔너리로 변환
-                row_dict = dict(row)
-                
-                file_name = row_dict.get("file_name", row_dict.get("file", ""))
-                sheet_name = row_dict.get("sheet_name", row_dict.get("sheet", ""))
-                string_id = row_dict.get("string_id", row_dict.get("id", ""))
-                
-                # 🔧 대소문자 정규화 (핵심 수정사항)
-                norm_file_name = file_name.lower() if file_name else ""
-                norm_sheet_name = sheet_name.lower() if sheet_name else ""
-                
-                # 🔧 테스트 ID 발견 시 로그
-                if string_id in test_ids:
-                    test_id_found[string_id] = True
-                    self.log_message(f"  🎯 테스트 ID 발견: {string_id} (file='{file_name}' → '{norm_file_name}', sheet='{sheet_name}' → '{norm_sheet_name}')")
-                
-                # 🔧 처음 3개 행에 대해서만 상세 로그
-                if idx < 3:
-                    self.log_message(f"  🔧 행 {idx+1}: file='{file_name}' → '{norm_file_name}', sheet='{sheet_name}' → '{norm_sheet_name}', id='{string_id}'")
-                
-                # 중복 STRING_ID 추적
-                if string_id not in self.duplicate_ids:
-                    self.duplicate_ids[string_id] = []
-                self.duplicate_ids[string_id].append(file_name)
-                
-                # 데이터 딕셔너리 생성
-                data = {
-                    "kr": row_dict.get("kr", ""),
-                    "en": row_dict.get("en", ""), 
-                    "cn": row_dict.get("cn", ""),
-                    "tw": row_dict.get("tw", ""),
-                    "th": row_dict.get("th", ""),
-                    "file_name": file_name,
-                    "sheet_name": sheet_name
-                }
-                
-                # 1. 파일명 + STRING_ID 캐싱 (1순위) - 🔧 정규화된 파일명 사용
-                if norm_file_name and norm_file_name not in self.translation_file_cache:
-                    self.translation_file_cache[norm_file_name] = {}
-                
-                if norm_file_name and string_id and string_id not in self.translation_file_cache[norm_file_name]:
-                    self.translation_file_cache[norm_file_name][string_id] = data
-                    
-                    # 🔧 테스트 ID 캐싱 시 로그
-                    if string_id in test_ids:
-                        self.log_message(f"    ✅ 파일 캐시에 저장: {norm_file_name}[{string_id}]")
-                
-                # 2. 시트명 + STRING_ID 캐싱 (2순위) - 🔧 정규화된 시트명 사용
-                if norm_sheet_name and norm_sheet_name not in self.translation_sheet_cache:
-                    self.translation_sheet_cache[norm_sheet_name] = {}
-                
-                if norm_sheet_name and string_id and string_id not in self.translation_sheet_cache[norm_sheet_name]:
-                    self.translation_sheet_cache[norm_sheet_name][string_id] = data
-                    
-                    # 🔧 테스트 ID 캐싱 시 로그
-                    if string_id in test_ids:
-                        self.log_message(f"    ✅ 시트 캐시에 저장: {norm_sheet_name}[{string_id}]")
-                
-                # 3. STRING_ID만 캐싱 (3순위)
-                if string_id:
-                    self.translation_cache[string_id] = data
-                    
-                    # 🔧 테스트 ID 캐싱 시 로그
-                    if string_id in test_ids:
-                        self.log_message(f"    ✅ 전체 캐시에 저장: {string_id}")
-                
-                # 4. KR 역방향 캐시 구축 (스마트 번역용)
-                kr_text = row_dict.get("kr", "")
-                if kr_text and kr_text.strip():
-                    kr_key = str(kr_text).strip()
-                    # KR 텍스트가 중복되지 않는 경우만 캐시에 저장 (첫 번째 발견된 것 우선)
-                    if kr_key not in self.kr_reverse_cache:
-                        # STRING_ID 정보도 포함해서 저장 (디버깅용)
-                        kr_cache_data = data.copy()
-                        kr_cache_data['string_id'] = string_id  # 소스 STRING_ID 추가
-                        self.kr_reverse_cache[kr_key] = kr_cache_data
-                        
-                        # 🔧 테스트 ID의 KR 캐싱 시 로그
-                        if string_id in test_ids:
-                            self.log_message(f"    ✅ KR 역방향 캐시에 저장: '{kr_key}' ← {string_id}")
-            
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='translation_data'")
+            if cursor.fetchone() is None:
+                message = "'translation_data' 테이블이 DB에 없습니다."
+                self.log_message(f"❌ {message}")
+                return {"status": "error", "message": message}
+
+            query = "SELECT * FROM translation_data"
+            df = pd.read_sql_query(query, conn)
             conn.close()
             
-            # 🔧 캐시 구성 완료 로그
-            self.log_message(f"🔧 캐시 구성 완료:")
-            self.log_message(f"  - 파일명 캐시: {len(self.translation_file_cache)}개 파일")
+            # 공통 캐시 구축 함수 호출
+            self.build_cache_from_dataframe(df)
             
-            # 🔧 파일명 캐시 키들 출력
-            file_cache_keys = list(self.translation_file_cache.keys())
-            self.log_message(f"  - 파일명 캐시 키들: {file_cache_keys}")
-            
-            self.log_message(f"  - 시트명 캐시: {len(self.translation_sheet_cache)}개 시트") 
-            
-            # 🔧 시트명 캐시 키들 출력
-            sheet_cache_keys = list(self.translation_sheet_cache.keys())
-            self.log_message(f"  - 시트명 캐시 키들: {sheet_cache_keys}")
-            
-            self.log_message(f"  - 전체 ID 캐시: {len(self.translation_cache)}개")
-            self.log_message(f"  - KR 역방향 캐시: {len(self.kr_reverse_cache)}개 (스마트 번역용)")
-            
-            # 🔧 특정 ID들 실제 확인
-            for test_id in test_ids:
-                found_in_db = test_id_found[test_id]
-                in_file_cache = any(test_id in cache for cache in self.translation_file_cache.values())
-                in_sheet_cache = any(test_id in cache for cache in self.translation_sheet_cache.values()) 
-                in_id_cache = test_id in self.translation_cache
-                
-                self.log_message(f"  🔧 {test_id}: DB발견={found_in_db}, 파일캐시={in_file_cache}, 시트캐시={in_sheet_cache}, ID캐시={in_id_cache}")
-                
-                # 🔧 어느 파일/시트 캐시에 있는지 확인
-                if in_file_cache:
-                    for file_key, file_cache in self.translation_file_cache.items():
-                        if test_id in file_cache:
-                            self.log_message(f"    → 파일캐시[{file_key}]에 존재")
-                            
-                if in_sheet_cache:
-                    for sheet_key, sheet_cache in self.translation_sheet_cache.items():
-                        if test_id in sheet_cache:
-                            self.log_message(f"    → 시트캐시[{sheet_key}]에 존재")
-            
-            # 결과 반환
+            # UI가 필요로 하는 모든 캐시 정보를 포함하여 반환
             return {
+                "status": "success",
+                "source_type": "DB",
                 "translation_cache": self.translation_cache,
                 "translation_file_cache": self.translation_file_cache,
                 "translation_sheet_cache": self.translation_sheet_cache,
                 "duplicate_ids": self.duplicate_ids,
                 "kr_reverse_cache": self.kr_reverse_cache,
-                "file_count": len(self.translation_file_cache),
-                "sheet_count": len(self.translation_sheet_cache),
-                "id_count": len(self.translation_cache),
-                "kr_reverse_count": len(self.kr_reverse_cache)
+                "id_count": len(self.translation_cache)
             }
-            
         except Exception as e:
             self.log_message(f"❌ 번역 DB 캐시 로딩 오류: {str(e)}")
-            import traceback
-            self.log_message(f"❌ 상세 오류: {traceback.format_exc()}")
-            return {
-                "status": "error",
-                "message": str(e)
-            }
+            return {"status": "error", "message": str(e)}
