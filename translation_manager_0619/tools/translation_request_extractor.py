@@ -146,168 +146,199 @@ class ScrollableCheckList(tk.Frame):
 class TranslationRequestExtractor(tk.Frame):
     def __init__(self, root):
         super().__init__(root)
-        # root가 Tk인지 Frame인지 구분 (독립 실행 vs 탭 임베드)
-        if isinstance(root, tk.Tk):
-            self.root = root
-            self.root.title("번역 요청 추출 도구")
-            self.root.geometry("1200x800")
-        else:
-            # 부모 프레임으로 사용
-            self.root = None  # 나중에 TranslationAutomationTool의 root로 설정됨
+        self.root = root if isinstance(root, tk.Tk) else root.winfo_toplevel()
         
         self.config = load_config()
         
-        # 엑셀 파일 폴더 선택 프레임
-        folder_frame = ttk.LabelFrame(self, text="엑셀 파일 폴더 선택")
-        folder_frame.pack(fill="x", padx=5, pady=5)
-        
-        ttk.Label(folder_frame, text="폴더 경로:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        # UI 변수 선언
         self.folder_path_var = tk.StringVar(value=self.config.get("excel_folder", ""))
-        ttk.Entry(folder_frame, textvariable=self.folder_path_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Button(folder_frame, text="찾아보기", command=self.select_excel_folder).grid(row=0, column=2, padx=5, pady=5)
-        ttk.Button(folder_frame, text="파일 검색", command=self.search_excel_files).grid(row=0, column=3, padx=5, pady=5)
+        self.output_db_var = tk.StringVar(value=self.config.get("output_db", ""))
         
+        # 기본 추출 옵션
+        self.extract_new_var = tk.BooleanVar(value=True)
+        self.extract_change_var = tk.BooleanVar(value=True)
+        self.mark_as_transferred_var = tk.BooleanVar(value=True)
+        
+        # 비교 추출용 변수
+        self.compare_source_type = tk.StringVar(value="Excel")
+        self.compare_excel_path_var = tk.StringVar()
+        self.compare_excel_sheet_var = tk.StringVar()
+        self.compare_db_path_var = tk.StringVar()
+        
+        # 비교 추출 옵션
+        self.compare_extract_new_var = tk.BooleanVar(value=True)
+        self.compare_extract_modified_var = tk.BooleanVar(value=True)
+        self.compare_lang_var = tk.BooleanVar(value=False)
+        self.compare_lang_vars = {lang: tk.BooleanVar(value=False) for lang in ["EN", "CN", "TW", "TH"]}
+        self.compare_lang_vars["KR"] = tk.BooleanVar(value=True)
+
+        # 내부 데이터
+        self.excel_files = []
+        self.extraction_thread = None
+        self.cancel_extraction = False
+        
+        self.setup_ui()
+        self.pack(fill="both", expand=True)
+        self._toggle_compare_source() # 초기 UI 상태 설정
+
+    def setup_ui(self):
+        """UX를 고려하여 UI를 재구성합니다."""
+        # 1. 소스 파일 선택 (공통 영역)
+        source_files_frame = ttk.LabelFrame(self, text="1. 추출 대상 파일 선택")
+        source_files_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        folder_frame = ttk.Frame(source_files_frame)
+        folder_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Label(folder_frame, text="엑셀 폴더 경로:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ttk.Entry(folder_frame, textvariable=self.folder_path_var, width=60).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(folder_frame, text="폴더 찾기", command=self.select_excel_folder).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(folder_frame, text="파일 검색", command=self.search_excel_files).grid(row=0, column=3, padx=5, pady=5)
         folder_frame.columnconfigure(1, weight=1)
         
-        # 파일 목록 프레임
-        files_frame = ttk.LabelFrame(self, text="엑셀 파일 목록")
-        files_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        self.excel_files_list = ScrollableCheckList(files_frame, width=700, height=200)
+        self.excel_files_list = ScrollableCheckList(source_files_frame, width=700, height=120)
         self.excel_files_list.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        # DB 출력 설정 프레임
-        output_frame = ttk.LabelFrame(self, text="출력 설정")
-        output_frame.pack(fill="x", padx=5, pady=5)
-        
-        ttk.Label(output_frame, text="DB 파일:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.output_db_var = tk.StringVar(value=self.config.get("output_db", ""))
-        ttk.Entry(output_frame, textvariable=self.output_db_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Button(output_frame, text="찾아보기", command=self.select_output_db).grid(row=0, column=2, padx=5, pady=5)
 
-        # 추출 조건 프레임
-        condition_frame = ttk.LabelFrame(output_frame, text="추출 조건 설정")
-        condition_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
+        # 2. 작업 선택 (Notebook으로 분리)
+        action_notebook = ttk.Notebook(self)
+        action_notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # 기본 조건 (항상 적용)
-        basic_frame = ttk.Frame(condition_frame)
-        basic_frame.pack(fill="x", padx=5, pady=2)
-        
-        # 신규 조건
-        self.extract_new_request_var = tk.BooleanVar(value=True)
-        new_request_cb = ttk.Checkbutton(basic_frame, text='#번역요청이 "신규"인 항목', variable=self.extract_new_request_var)
-        new_request_cb.pack(side="left", padx=5)
-        
-        # change 조건 추가
-        self.extract_change_request_var = tk.BooleanVar(value=False)
-        change_request_cb = ttk.Checkbutton(basic_frame, text='#번역요청이 "change"인 항목', variable=self.extract_change_request_var)
-        change_request_cb.pack(side="left", padx=15)
+        # 탭 1: 기본 추출
+        basic_extract_tab = ttk.Frame(action_notebook)
+        action_notebook.add(basic_extract_tab, text="기본 추출")
+        self.setup_basic_extract_tab(basic_extract_tab)
 
-        # 추가 조건 (선택 사항)
-        additional_frame = ttk.LabelFrame(condition_frame, text="추가 조건 (선택사항)")
-        additional_frame.pack(fill="x", padx=5, pady=5)
+        # 탭 2: 비교하여 추출
+        compare_extract_tab = ttk.Frame(action_notebook)
+        action_notebook.add(compare_extract_tab, text="비교하여 추출")
+        self.setup_compare_extract_tab(compare_extract_tab)
 
-        empty_frame = ttk.Frame(additional_frame)
-        empty_frame.pack(fill="x", padx=5, pady=2)
-
-        self.extract_en_empty_var = tk.BooleanVar(value=False)
-        self.extract_cn_empty_var = tk.BooleanVar(value=False)  # 디폴트 해제
-        self.extract_tw_empty_var = tk.BooleanVar(value=False)  # 디폴트 해제
-
-        ttk.Checkbutton(empty_frame, text="EN이 비어있는 항목", variable=self.extract_en_empty_var).pack(side="left", padx=10, pady=2)
-        ttk.Checkbutton(empty_frame, text="CN이 비어있는 항목", variable=self.extract_cn_empty_var).pack(side="left", padx=10, pady=2)
-        ttk.Checkbutton(empty_frame, text="TW가 비어있는 항목", variable=self.extract_tw_empty_var).pack(side="left", padx=10, pady=2)
-
-        
-        # 성능 최적화 옵션 추가
-        optimization_frame = ttk.Frame(output_frame)
-        optimization_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
-
-        # 기존 성능 최적화 옵션 프레임 행 번호 수정
-        optimization_frame = ttk.Frame(output_frame)
-        optimization_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=5, pady=5)  # row=1에서 row=2로 변경
-        
-        self.batch_size_var = tk.IntVar(value=100)
-        ttk.Label(optimization_frame, text="일괄 처리 크기:").pack(side="left", padx=5)
-        ttk.Spinbox(optimization_frame, from_=10, to=1000, increment=10, textvariable=self.batch_size_var, width=5).pack(side="left", padx=5)
-        
-        self.use_read_only_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(optimization_frame, text="읽기 전용 모드 사용 (빠름)", variable=self.use_read_only_var).pack(side="left", padx=15)
-        
-        output_frame.columnconfigure(1, weight=1)
-        
-        # 실행 버튼 프레임
-        action_frame = ttk.Frame(self)
-        action_frame.pack(fill="x", padx=5, pady=5)
-
-        ttk.Button(action_frame, text="번역 요청 항목 추출", command=self.extract_translation_requests).pack(side="right", padx=5, pady=5)
-        ttk.Button(action_frame, text="템플릿으로 내보내기", command=self.export_to_template_excel).pack(side="right", padx=5, pady=5)
-        ttk.Button(action_frame, text="Excel로 내보내기", command=self.export_to_excel).pack(side="right", padx=5, pady=5)
-        ttk.Button(action_frame, text="컬럼 캐시 초기화", command=self.reset_column_cache).pack(side="right", padx=5, pady=5)
-
-        
-        # 로그 표시 영역
+        # 3. 로그 및 상태 표시줄 (공통 영역)
         log_frame = ttk.LabelFrame(self, text="작업 로그")
-        log_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        self.log_text = tk.Text(log_frame, wrap="word", height=10)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.log_text = tk.Text(log_frame, wrap="word", height=8)
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
-        
         scrollbar.pack(side="right", fill="y")
         self.log_text.pack(fill="both", expand=True)
         
-        # 상태 표시줄
         status_frame = ttk.Frame(self)
-        status_frame.pack(fill="x", padx=5, pady=5)
-        
+        status_frame.pack(fill="x", padx=10, pady=5)
         self.status_label = ttk.Label(status_frame, text="대기 중...")
         self.status_label.pack(side="left", padx=5)
+
+    def setup_basic_extract_tab(self, parent_tab):
+        """'기본 추출' 탭의 UI를 구성합니다."""
+        # 2.1 추출 조건
+        condition_frame = ttk.LabelFrame(parent_tab, text="2. 추출 조건")
+        condition_frame.pack(fill="x", padx=5, pady=5)
         
-        self.progress_bar = ttk.Progressbar(status_frame, length=400, mode="determinate")
-        self.progress_bar.pack(side="right", fill="x", expand=True, padx=5)
+        ttk.Checkbutton(condition_frame, text="#번역요청 컬럼 값이 '신규'인 행", variable=self.extract_new_var).pack(anchor="w", padx=5)
+        ttk.Checkbutton(condition_frame, text="#번역요청 컬럼 값이 'change'인 행", variable=self.extract_change_var).pack(anchor="w", padx=5)
+        ttk.Separator(condition_frame, orient="horizontal").pack(fill="x", pady=5)
+        ttk.Checkbutton(condition_frame, text="추출 후 #번역요청 컬럼을 '전달'로 변경", variable=self.mark_as_transferred_var).pack(anchor="w", padx=5)
+
+        # 2.2 출력 설정
+        output_frame = ttk.LabelFrame(parent_tab, text="3. 출력 설정")
+        output_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Label(output_frame, text="DB 파일:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ttk.Entry(output_frame, textvariable=self.output_db_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(output_frame, text="저장 위치", command=self.select_output_db).grid(row=0, column=2, padx=5, pady=5)
+        output_frame.columnconfigure(1, weight=1)
+
+        # 2.3 실행 버튼
+        action_frame = ttk.Frame(parent_tab)
+        action_frame.pack(fill="x", padx=5, pady=10, anchor="e")
+        ttk.Button(action_frame, text="기본 추출 실행", command=self.extract_translation_requests).pack()
         
-        # 내부 저장용
-        self.excel_files = []
-        self.column_cache = {}  # 컬럼 캐시
-        self.extraction_thread = None  # 추출 작업용 스레드
-        self.cancel_extraction = False  # 작업 취소 플래그
+    def setup_compare_extract_tab(self, parent_tab):
+        """'비교하여 추출' 탭의 UI를 구성합니다."""
+        # 2.1 비교 대상 선택
+        compare_source_frame = ttk.LabelFrame(parent_tab, text="2. 비교 대상 선택")
+        compare_source_frame.pack(fill="x", padx=5, pady=5)
         
-        # 폼 표시
-        self.pack(fill="both", expand=True)
+        # 소스 타입 선택 (라디오 버튼)
+        tk.Radiobutton(compare_source_frame, text="Excel 파일", variable=self.compare_source_type, value="Excel", command=self._toggle_compare_source).pack(anchor="w")
+        self.excel_compare_frame = ttk.Frame(compare_source_frame)
+        self.excel_compare_frame.pack(fill="x", padx=20)
+        ttk.Entry(self.excel_compare_frame, textvariable=self.compare_excel_path_var, width=50).pack(side="left", expand=True, fill="x")
+        self.compare_sheet_combo = ttk.Combobox(self.excel_compare_frame, textvariable=self.compare_excel_sheet_var, state="readonly", width=20)
+        self.compare_sheet_combo.pack(side="left", padx=5)
+        ttk.Button(self.excel_compare_frame, text="파일 찾기", command=self.select_compare_excel).pack(side="left")
+
+        tk.Radiobutton(compare_source_frame, text="DB 파일", variable=self.compare_source_type, value="DB", command=self._toggle_compare_source).pack(anchor="w", pady=(5,0))
+        self.db_compare_frame = ttk.Frame(compare_source_frame)
+        self.db_compare_frame.pack(fill="x", padx=20)
+        ttk.Entry(self.db_compare_frame, textvariable=self.compare_db_path_var, width=50).pack(side="left", expand=True, fill="x")
+        ttk.Button(self.db_compare_frame, text="파일 찾기", command=self.select_compare_db).pack(side="left")
+
+        # 2.2 비교 추출 조건
+        compare_options_frame = ttk.LabelFrame(parent_tab, text="3. 비교 추출 조건")
+        compare_options_frame.pack(fill="x", padx=5, pady=5)
         
-        # 시작 시 컬럼 캐시 로드
-        self.load_column_cache()
-    
+        basic_compare_frame = ttk.Frame(compare_options_frame)
+        basic_compare_frame.pack(fill="x", anchor="w")
+        ttk.Checkbutton(basic_compare_frame, text="신규 항목 추출 (비교본에 없는 STRING_ID)", variable=self.compare_extract_new_var).pack(side="left", padx=5)
+        ttk.Checkbutton(basic_compare_frame, text="변경된 항목 추출 (언어 값 비교)", variable=self.compare_extract_modified_var).pack(side="left", padx=5)
+        
+        lang_compare_frame = ttk.Frame(compare_options_frame)
+        lang_compare_frame.pack(fill="x", pady=5, anchor="w")
+        ttk.Checkbutton(lang_compare_frame, text="다음 언어들 값 비교:", variable=self.compare_lang_var).pack(side="left", padx=5)
+        for lang, var in self.compare_lang_vars.items():
+            cb = ttk.Checkbutton(lang_compare_frame, text=lang, variable=var)
+            cb.pack(side="left", padx=2)
+
+        # 2.3 출력 및 실행
+        output_frame = ttk.LabelFrame(parent_tab, text="4. 출력 및 실행")
+        output_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Label(output_frame, text="DB 파일:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ttk.Entry(output_frame, textvariable=self.output_db_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(output_frame, text="저장 위치", command=self.select_output_db).grid(row=0, column=2, padx=5, pady=5)
+        output_frame.columnconfigure(1, weight=1)
+        
+        action_frame = ttk.Frame(parent_tab)
+        action_frame.pack(fill="x", padx=5, pady=10, anchor="e")
+        ttk.Button(action_frame, text="비교하여 추출 실행", command=self.run_compare_extract).pack()
+
+
+    def _toggle_compare_source(self):
+        """비교 대상 소스 타입에 따라 UI 활성화/비활성화"""
+        is_excel = self.compare_source_type.get() == "Excel"
+        for child in self.excel_compare_frame.winfo_children():
+            child.config(state="normal" if is_excel else "disabled")
+        for child in self.db_compare_frame.winfo_children():
+            child.config(state="disabled" if is_excel else "normal")
+
+    def select_compare_excel(self):
+        path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx;*.xls"), ("All files", "*.*")])
+        if path:
+            self.compare_excel_path_var.set(path)
+            try:
+                wb = load_workbook(path, read_only=True)
+                self.compare_sheet_combo['values'] = wb.sheetnames
+                if wb.sheetnames:
+                    self.compare_excel_sheet_var.set(wb.sheetnames[0])
+                wb.close()
+            except Exception as e:
+                show_message(self.root, "error", "파일 오류", f"시트 목록을 불러올 수 없습니다: {e}")
+
+    def select_compare_db(self):
+        path = filedialog.askopenfilename(filetypes=[("DB files", "*.db"), ("All files", "*.*")])
+        if path:
+            self.compare_db_path_var.set(path)
+            
+
     def select_excel_folder(self):
-        """엑셀 파일 폴더 선택"""
         folder = filedialog.askdirectory(title="엑셀 파일 폴더 선택", parent=self.root)
         if folder:
             self.folder_path_var.set(folder)
-            self.config["excel_folder"] = folder
-            save_config(self.config)
-            # 포커스를 다시 자동화 툴 창으로
-            self.root.after(100, self.root.focus_force)
-            self.root.after(100, self.root.lift)
-    
+            
     def select_output_db(self):
-        """DB 파일 저장 경로 선택"""
         file_path = filedialog.asksaveasfilename(
-            defaultextension=".db",
-            filetypes=[("DB 파일", "*.db"), ("모든 파일", "*.*")],
-            title="번역 요청 DB 파일 저장",
-            parent=self.root
-        )
+            defaultextension=".db", filetypes=[("DB 파일", "*.db")], title="DB 파일 저장", parent=self.root)
         if file_path:
             self.output_db_var.set(file_path)
-            self.config["output_db"] = file_path
-            save_config(self.config)
-            # 포커스를 다시 자동화 툴 창으로
-            self.root.after(100, self.root.focus_force)
-            self.root.after(100, self.root.lift)
-    
+
     def search_excel_files(self):
-        """엑셀 파일 검색 - common_utils 활용"""
         folder = self.folder_path_var.get()
         if not folder or not os.path.isdir(folder):
             show_message(self.root, "warning", "경고", "유효한 폴더를 선택하세요.")
@@ -315,32 +346,25 @@ class TranslationRequestExtractor(tk.Frame):
         
         self.excel_files_list.clear()
         self.excel_files = []
-        
         self.log_text.delete(1.0, tk.END)
-        self.log_text.insert(tk.END, "파일 검색 중...\n")
-        self.root.update()
+        self.log_message("파일 검색 중...")
         
-        # PathUtils 활용
-        found_files = PathUtils.find_files(folder, ".xlsx", recursive=True)
+        for root, _, files in os.walk(folder):
+            for file in files:
+                if file.lower().startswith("string") and file.lower().endswith(('.xlsx', '.xls')) and not file.startswith("~$"):
+                    self.excel_files.append((file, os.path.join(root, file)))
         
-        # String으로 시작하는 파일만 필터링
-        string_files = []
-        for file_path in found_files:
-            file_name = os.path.basename(file_path)
-            if file_name.lower().startswith("string") and not file_name.startswith("~$"):
-                string_files.append((file_name, file_path))
+        self.excel_files.sort()
+        for file_name, _ in self.excel_files:
+            self.excel_files_list.add_item(file_name, checked=True)
+        self.log_message(f"{len(self.excel_files)}개의 엑셀 파일을 찾았습니다.")
+
+    # --- 로깅 함수 ---
+    def log_message(self, message):
+        self.log_text.insert(tk.END, f"{message}\n")
+        self.log_text.see(tk.END)
+        self.root.update_idletasks()
         
-        # 결과 처리
-        if not string_files:
-            self.log_text.insert(tk.END, "String으로 시작하는 엑셀 파일을 찾지 못했습니다.\n")
-            show_message(self.root, "info", "알림", "String으로 시작하는 엑셀 파일을 찾지 못했습니다.")
-        else:
-            self.excel_files = string_files
-            for file_name, _ in string_files:
-                self.excel_files_list.add_item(file_name, checked=True)
-                
-            self.log_text.insert(tk.END, f"{len(string_files)}개의 엑셀 파일을 찾았습니다.\n")
-            show_message(self.root, "info", "알림", f"{len(string_files)}개의 엑셀 파일을 찾았습니다.")
     
     def find_translation_request_column(self, worksheet):
         """#번역요청 컬럼 찾기 (공백 무시) - ExcelUtils 활용"""
@@ -378,73 +402,153 @@ class TranslationRequestExtractor(tk.Frame):
     
     
     def extract_translation_requests(self):
-        """번역 요청 항목 추출 작업 시작 (백그라운드 스레드)"""
-        # 1. 중복 실행 방지
-        if self.extraction_thread and self.extraction_thread.is_alive():
-            show_message(self.root, "info", "알림", "이미 추출 작업이 진행 중입니다.")
-            return
+        """'기본 추출' 실행 함수"""
+        if self._is_task_running(): return
         
-        # 2. 파일 선택 확인
-        selected_files = self.excel_files_list.get_checked_items()
-        if not selected_files:
-            show_message(self.root, "warning", "경고", "파일을 선택하세요.")
-            return
-        
-        # 3. DB 파일 경로 확인
+        selected_files = self._get_selected_files()
+        if not selected_files: return
+            
         db_path = self.output_db_var.get()
         if not db_path:
-            show_message(self.root, "warning", "경고", "DB 파일 경로를 지정하세요.")
+            show_message(self.root, "warning", "경고", "출력 DB 파일 경로를 지정하세요.")
             return
-        
-        # 4. 추출 조건 검증
-        extract_conditions = {
-            'new_request': self.extract_new_request_var.get(),
-            'change_request': self.extract_change_request_var.get(),
-            'en_empty': self.extract_en_empty_var.get(),
-            'cn_empty': self.extract_cn_empty_var.get(),
-            'tw_empty': self.extract_tw_empty_var.get()
-        }
-        
-        # 최소 하나의 조건은 선택되어야 함
-        if not any(extract_conditions.values()):
-            show_message(self.root, "warning", "경고", "추출할 조건을 최소 하나 이상 선택하세요.")
+
+        conditions = []
+        if self.extract_new_var.get(): conditions.append("신규")
+        if self.extract_change_var.get(): conditions.append("change")
+        if not conditions:
+            show_message(self.root, "warning", "경고", "추출할 조건을 하나 이상 선택하세요.")
             return
-        
-        # 5. 선택된 조건들 확인 및 로깅
-        selected_conditions = []
-        condition_labels = {
-            'new_request': '#번역요청="신규"',
-            'change_request': '#번역요청="change"',
-            'en_empty': 'EN빈칸',
-            'cn_empty': 'CN빈칸', 
-            'tw_empty': 'TW빈칸'
-        }
-        
-        for condition_key, is_selected in extract_conditions.items():
-            if is_selected:
-                selected_conditions.append(condition_labels[condition_key])
-        
-        # 6. 작업 시작 로깅
-        logger.info(f"번역 요청 추출 작업 시작:")
-        logger.info(f"  대상 파일: {len(selected_files)}개")
-        logger.info(f"  추출 조건: {', '.join(selected_conditions)}")
-        logger.info(f"  출력 DB: {db_path}")
-        
-        # 로그 텍스트에도 조건 표시
-        self.log_text.insert(tk.END, f"추출 조건: {', '.join(selected_conditions)}\n")
-        
-        # 7. 기존 DB 파일 확인
+
         if os.path.exists(db_path):
-            if not show_message(self.root, "yesno", "확인", 
-                            f"'{os.path.basename(db_path)}' 파일이 이미 존재합니다.\n"
-                            f"덮어쓰시겠습니까?\n\n"
-                            f"추출 조건: {', '.join(selected_conditions)}"):
+            if not show_message(self.root, "yesno", "확인", f"'{os.path.basename(db_path)}' 파일이 이미 존재합니다. 덮어쓰시겠습니까?"):
                 return
         
-        # 8. 작업 실행
-        self._setup_extraction_thread(selected_files, db_path)
+        self.log_text.delete(1.0, tk.END)
+        self.log_message("기본 추출 작업을 시작합니다...")
+        
+        self.extraction_thread = threading.Thread(
+            target=self._extract_in_background,
+            args=(selected_files, db_path, conditions, self.mark_as_transferred_var.get())
+        )
+        self.extraction_thread.daemon = True
+        self.extraction_thread.start()
+    
+    def _extract_in_background(self, selected_files, db_path, conditions, mark_as_transferred):
+        """백그라운드에서 기본 추출 작업 수행"""
+        loading_popup = LoadingPopup(self.root, "추출 중", "데이터 추출 준비 중...")
+        
+        extracted_data = []
+        files_to_update = {} # {file_path: {sheet_name: [row_index, ...]}}
 
+        try:
+            # ... (DB 초기화 로직) ...
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            # ... (테이블 생성 로직) ...
 
+            total_files = len(selected_files)
+            for i, (file_name, file_path) in enumerate(selected_files):
+                loading_popup.update_message(f"파일 처리 중 ({i+1}/{total_files}): {file_name}")
+                
+                df_map = pd.read_excel(file_path, sheet_name=None, header=None)
+                
+                for sheet_name, df in df_map.items():
+                    if not sheet_name.lower().startswith("string"): continue
+                    
+                    headers, header_row_idx = self._find_headers_in_dataframe(df)
+                    if not headers or "#번역요청" not in headers: continue
+                    
+                    df.columns = df.iloc[header_row_idx]
+                    df_data = df.iloc[header_row_idx + 1:].reset_index(drop=True)
+
+                    req_col_name = headers["#번역요청"]
+                    
+                    for condition in conditions:
+                        # isin을 사용하여 여러 조건 동시 처리
+                        extracted_rows = df_data[df_data[req_col_name].astype(str).str.lower() == condition]
+                        
+                        for _, row in extracted_rows.iterrows():
+                            # ... (데이터 추출 및 extracted_data에 추가) ...
+                            
+                            # '전달'로 변경할 행 정보 기록
+                            if mark_as_transferred:
+                                if file_path not in files_to_update:
+                                    files_to_update[file_path] = {}
+                                if sheet_name not in files_to_update[file_path]:
+                                    files_to_update[file_path][sheet_name] = []
+                                
+                                # 엑셀의 실제 행 인덱스 (헤더 행 + 데이터 인덱스 + 2)
+                                excel_row_index = header_row_idx + _.name + 2
+                                files_to_update[file_path][sheet_name].append(excel_row_index)
+            
+            # ... (DB에 데이터 저장) ...
+
+            # '전달'로 파일 업데이트
+            if mark_as_transferred and files_to_update:
+                loading_popup.update_message("원본 파일에 '전달' 표시 중...")
+                self._update_files_as_transferred(files_to_update, "#번역요청", "전달")
+
+            loading_popup.close()
+            show_message(self.root, "info", "완료", "기본 추출이 완료되었습니다.")
+        except Exception as e:
+            loading_popup.close()
+            show_message(self.root, "error", "오류", f"추출 중 오류 발생: {e}")
+
+    def run_compare_extract(self):
+        """'비교하여 추출' 실행 함수"""
+        # ... (구현 필요) ...
+        show_message(self.root, "info", "준비 중", "비교 추출 기능은 현재 개발 중입니다.")
+
+    # --- 헬퍼 함수 ---
+    def _is_task_running(self):
+        if self.extraction_thread and self.extraction_thread.is_alive():
+            show_message(self.root, "info", "알림", "이미 다른 작업이 진행 중입니다.")
+            return True
+        return False
+
+    def _get_selected_files(self):
+        selected_file_names = self.excel_files_list.get_checked_items()
+        if not selected_file_names:
+            show_message(self.root, "warning", "경고", "추출할 파일을 선택하세요.")
+            return None
+        return [item for item in self.excel_files if item[0] in selected_file_names]
+
+    def _find_headers_in_dataframe(self, df):
+        """DataFrame에서 헤더 행과 컬럼 위치 찾기"""
+        for i, row in df.head(10).iterrows():
+            row_values = [str(v).lower().strip() for v in row if pd.notna(v)]
+            if "#번역요청" in row_values and "string_id" in row_values:
+                # 헤더 맵 생성 {정규화된 이름: 원본 이름}
+                header_map = {str(v).lower().strip(): str(v) for v in row if pd.notna(v)}
+                return header_map, i
+        return None, -1
+
+    def _update_files_as_transferred(self, files_to_update, col_name_to_find, new_value):
+        """추출된 항목을 엑셀 파일에서 '전달'로 표시"""
+        for file_path, sheets in files_to_update.items():
+            try:
+                wb = load_workbook(file_path)
+                for sheet_name, row_indices in sheets.items():
+                    if sheet_name in wb.sheetnames:
+                        ws = wb[sheet_name]
+                        # 헤더를 다시 찾아 정확한 컬럼 인덱스 확보
+                        col_idx = None
+                        for r in range(1, 11):
+                            for c in range(1, ws.max_column + 1):
+                                if str(ws.cell(row=r, column=c).value).lower().strip() == col_name_to_find.lower():
+                                    col_idx = c
+                                    break
+                            if col_idx: break
+                        
+                        if col_idx:
+                            for row_idx in row_indices:
+                                ws.cell(row=row_idx, column=col_idx).value = new_value
+                wb.save(file_path)
+                self.log_message(f"'{os.path.basename(file_path)}' 파일 업데이트 완료.")
+            except Exception as e:
+                self.log_message(f"파일 업데이트 실패 '{os.path.basename(file_path)}': {e}")
+            
     def _setup_extraction_thread(self, selected_files, db_path):
         """추출 작업용 백그라운드 스레드 설정"""
         # 진행 상태 초기화
