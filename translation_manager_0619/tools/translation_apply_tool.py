@@ -34,12 +34,22 @@ class TranslationApplyTool(tk.Frame):
         self.record_date_var = tk.BooleanVar(value=True)
         self.available_languages = ["KR", "EN", "CN", "TW", "TH"]
         self.apply_lang_vars = {}
+        
+        # <<< [추가] 새로운 옵션 변수 선언 >>>
+        self.kr_match_check_var = tk.BooleanVar(value=True)
+        self.kr_mismatch_delete_var = tk.BooleanVar(value=False)
+        self.apply_by_request_col_var = tk.BooleanVar(value=True)
+        
+        # 데이터 미리보기 버튼을 위한 변수
+        self.view_data_button = None
 
         # --- 내부 데이터 ---
         self.original_files = []
         self.excluded_files = excluded_files
         
         self.setup_ui()
+
+    # tools/translation_apply_tool.py
 
     def setup_ui(self):
         """번역 적용 탭 UI 구성 (좌/우 분할 레이아웃)"""
@@ -91,15 +101,37 @@ class TranslationApplyTool(tk.Frame):
 
         options_frame = ttk.LabelFrame(self, text="적용 옵션")
         options_frame.pack(fill="x", padx=5, pady=5)
+
+        lang_frame = ttk.Frame(options_frame)
+        lang_frame.pack(fill="x", padx=5, pady=2, anchor="w")
+        ttk.Label(lang_frame, text="적용 언어:").pack(side="left", padx=5)
         for i, lang in enumerate(self.available_languages):
             var = tk.BooleanVar(value=True if lang in ["CN", "TW"] else False)
             self.apply_lang_vars[lang] = var
-            ttk.Checkbutton(options_frame, text=lang, variable=var).grid(row=i // 5, column=i % 5, padx=10, pady=5, sticky="w")
-        ttk.Checkbutton(options_frame, text="번역 적용 표시", variable=self.record_date_var).grid(row=1, column=0, columnspan=5, padx=5, pady=5, sticky="w")
+            ttk.Checkbutton(lang_frame, text=lang, variable=var).pack(side="left", padx=5)
+
+        kr_check_frame = ttk.Frame(options_frame)
+        kr_check_frame.pack(fill="x", padx=5, pady=2, anchor="w")
+        ttk.Checkbutton(kr_check_frame, text="KR 일치 검사 (불일치 시 건너뛰기)", variable=self.kr_match_check_var, command=self.toggle_kr_options).pack(side="left", padx=5)
+        self.kr_mismatch_cb = ttk.Checkbutton(kr_check_frame, text="└ KR 불일치 시 다국어 제거", variable=self.kr_mismatch_delete_var)
+        self.kr_mismatch_cb.pack(side="left", padx=5)
+
+        conditional_frame = ttk.Frame(options_frame)
+        conditional_frame.pack(fill="x", padx=5, pady=2, anchor="w")
+        ttk.Checkbutton(conditional_frame, text='#번역요청이 "신규" 또는 "change"일 때만 적용', variable=self.apply_by_request_col_var).pack(side="left", padx=5)
         
+        other_frame = ttk.Frame(options_frame)
+        other_frame.pack(fill="x", padx=5, pady=2, anchor="w")
+        ttk.Checkbutton(other_frame, text="번역 적용 표시", variable=self.record_date_var).pack(side="left", padx=5)
+        
+        # <<< [수정] 버튼 레이아웃 및 새 버튼 추가 >>>
         action_frame = ttk.Frame(self)
         action_frame.pack(fill="x", padx=5, pady=5)
+        
         ttk.Button(action_frame, text="번역 적용", command=self.apply_translation).pack(side="right", padx=5, pady=5)
+        # '로드된 데이터 보기' 버튼 추가, 초기 상태는 비활성화
+        self.view_data_button = ttk.Button(action_frame, text="로드된 데이터 보기", command=self.show_loaded_data_viewer, state="disabled")
+        self.view_data_button.pack(side="right", padx=5, pady=5)
         ttk.Button(action_frame, text="번역 데이터 로드", command=self.load_translation_data).pack(side="right", padx=5, pady=5)
         
         log_frame = ttk.LabelFrame(self, text="작업 로그")
@@ -114,7 +146,18 @@ class TranslationApplyTool(tk.Frame):
         status_frame.pack(fill="x", padx=5, pady=5)
         self.status_label_apply = ttk.Label(status_frame, text="대기 중...")
         self.status_label_apply.pack(side="left", padx=5)
+        
+        self.toggle_kr_options()
 
+    def toggle_kr_options(self):
+        """KR 일치 검사 체크박스 상태에 따라 하위 옵션 활성화/비활성화"""
+        if self.kr_match_check_var.get():
+            self.kr_mismatch_cb.config(state="normal")
+        else:
+            # KR 검사를 안하면, 불일치 시 제거 옵션은 비활성화
+            self.kr_mismatch_cb.config(state="disabled")
+            self.kr_mismatch_delete_var.set(False)
+                    
     def select_excel_source_file(self):
         file_path = filedialog.askopenfilename(
             filetypes=[("Excel 파일", "*.xlsx"), ("모든 파일", "*.*")],
@@ -287,12 +330,14 @@ class TranslationApplyTool(tk.Frame):
         self.log_text.insert(tk.END, f"- 전체 고유 STRING_ID: {id_count}개\n")
         
         self.status_label_apply.config(text=f"번역 DB 캐싱 완료 - {id_count}개 항목")
+        self.view_data_button.config(state="normal")
         
         messagebox.showinfo(
             "완료", 
             f"번역 DB 캐싱 완료!\n파일 수: {file_count}개\n시트 수: {sheet_count}개\n항목 수: {id_count}개", 
             parent=self
         )
+
 
     def apply_translation(self):
         if not hasattr(self.translation_apply_manager, 'translation_cache') or not self.translation_apply_manager.translation_cache:
@@ -308,16 +353,42 @@ class TranslationApplyTool(tk.Frame):
         if not selected_langs:
             messagebox.showwarning("경고", "적용할 언어를 하나 이상 선택하세요.", parent=self)
             return
-            
+
+        # <<< [추가] 파일 열림 상태 사전 검사 로직 >>>
+        try:
+            # 체크리스트에서 선택된 파일들의 전체 경로 목록 생성
+            file_paths_to_check = [
+                next(path for name, path in self.original_files if name == file_name)
+                for file_name in selected_files
+            ]
+
+            # 파일이 열려 있는지 확인
+            open_files = self._check_files_are_open(file_paths_to_check)
+            if open_files:
+                # 열려 있는 파일이 있으면 경고 메시지 표시 후 작업 중단
+                messagebox.showwarning(
+                    "작업 중단",
+                    "다음 파일이 다른 프로그램에서 열려 있어 작업을 시작할 수 없습니다.\n\n"
+                    "파일을 모두 닫은 후 다시 시도해 주세요.\n\n"
+                    f"열려있는 파일:\n- " + "\n- ".join(open_files),
+                    parent=self
+                )
+                return
+        except Exception as e:
+            messagebox.showerror("오류", f"파일 상태 확인 중 오류가 발생했습니다: {e}", parent=self)
+            return
+        # <<< 사전 검사 로직 끝 >>>
+
         self.log_text.delete(1.0, tk.END)
         self.log_text.insert(tk.END, "번역 적용 작업 시작...\n")
         self.status_label_apply.config(text="작업 중...")
         self.update()
             
-        self.progress_bar["maximum"] = len(selected_files)
-        self.progress_bar["value"] = 0
-            
         loading_popup = LoadingPopup(self, "번역 적용 중", "번역 적용 준비 중...")
+        
+        kr_match_check = self.kr_match_check_var.get()
+        kr_mismatch_delete = self.kr_mismatch_delete_var.get()
+        apply_by_request_col = self.apply_by_request_col_var.get()
             
         def apply_translations():
             total_updated = 0
@@ -337,20 +408,28 @@ class TranslationApplyTool(tk.Frame):
                     loading_popup.update_progress((i / len(selected_files)) * 100, f"파일 처리 중 ({i+1}/{len(selected_files)}): {n}"),
                     self.log_text.insert(tk.END, f"\n파일 {n} 처리 중...\n"),
                     self.log_text.see(tk.END),
-                    self.progress_bar.configure(value=i+1)
                 ])
                     
                 try:
                     result = self.translation_apply_manager.apply_translation(
-                        file_path, selected_langs, self.record_date_var.get()
+                        file_path, 
+                        selected_langs, 
+                        self.record_date_var.get(),
+                        kr_match_check=kr_match_check,
+                        kr_mismatch_delete=kr_mismatch_delete,
+                        apply_by_request_col=apply_by_request_col,
+                        smart_translation=False 
                     )
                         
                     if result["status"] == "success":
                         update_count = result["total_updated"]
                         total_updated += update_count
                         processed_count += 1
-                        self.after(0, lambda c=update_count: [
-                            self.log_text.insert(tk.END, f"  {c}개 항목 업데이트 완료\n"),
+                        self.after(0, lambda c=update_count, res=result: [
+                            self.log_text.insert(tk.END, f"  - 적용: {res.get('total_updated', 0)} 행\n"),
+                            self.log_text.insert(tk.END, f"  - KR 불일치(건너뛰기): {res.get('kr_mismatch_skipped', 0)} 행\n"),
+                            self.log_text.insert(tk.END, f"  - KR 불일치(다국어 제거): {res.get('kr_mismatch_deleted', 0)} 행\n"),
+                            self.log_text.insert(tk.END, f"  - 조건부 적용(건너뛰기): {res.get('conditional_skipped', 0)} 행\n"),
                             self.log_text.see(tk.END)
                         ])
                     elif result["status"] == "info":
@@ -377,37 +456,217 @@ class TranslationApplyTool(tk.Frame):
                         self.log_text.insert(tk.END, f"  오류 발생: {error_msg}\n"),
                         self.log_text.see(tk.END)
                     ])
-                    
+            
             self.after(0, lambda: self.process_translation_apply_result(
                 total_updated, processed_count, error_count, loading_popup, problem_files))
 
         thread = threading.Thread(target=apply_translations, daemon=True)
         thread.start()
-            
-    def process_translation_apply_result(self, results, loading_popup):
+
+         
+    def process_translation_apply_result(self, total_updated, processed_count, error_count, loading_popup, problem_files):
+        """번역 적용 스레드 완료 후 결과를 처리하고 UI에 표시합니다."""
         loading_popup.close()
-        total_updated = results['total_updated']
-        self.log_text.insert(tk.END, f"\n번역 적용 작업 완료!\n총 {total_updated}개 항목이 업데이트되었습니다.\n")
-        self.status_label_apply.config(text=f"번역 적용 완료 - {total_updated}개 항목")
-        
-        messagebox.showinfo("완료", f"번역 적용 작업이 완료되었습니다.\n총 {total_updated}개 항목이 업데이트되었습니다.", parent=self)
 
-        problem_summary = []
-        total_problem_files = 0
+        # 로그 영역에 최종 요약 정보 출력
+        self.log_text.insert(tk.END, "\n" + "="*40 + "\n")
+        self.log_text.insert(tk.END, "번역 적용 작업 최종 완료\n")
+        self.log_text.insert(tk.END, f"  - 성공: {processed_count}개 파일\n")
+        self.log_text.insert(tk.END, f"  - 실패: {error_count}개 파일\n")
+        self.log_text.insert(tk.END, f"  - 총 업데이트된 항목 수: {total_updated}개\n")
+        self.log_text.insert(tk.END, "="*40 + "\n")
+        self.log_text.see(tk.END)
         
-        for error_type, files in problem_files.items():
-            if files:
-                file_names = [f["file_name"] for f in files]
-                problem_summary.append(f"🔗 {error_type} ({len(files)}개):\n   " + "\n   ".join(file_names))
-                total_problem_files += len(files)
-
-        completion_msg = f"번역 적용 작업이 완료되었습니다.\n총 {total_updated}개 항목이 업데이트되었습니다."
+        self.status_label_apply.config(text=f"번역 적용 완료 - {total_updated}개 항목 업데이트")
+        
+        # 처리 실패 파일 요약
+        problem_summary_list = []
+        total_problem_files = sum(len(files) for files in problem_files.values())
         
         if total_problem_files > 0:
-            problem_detail = "\n\n⚠️ 처리하지 못한 파일들:\n\n" + "\n\n".join(problem_summary)
+            self.log_text.insert(tk.END, f"\n처리 실패 파일 상세 ({total_problem_files}개):\n")
+            for error_type, files in problem_files.items():
+                if files:
+                    # 오류 유형을 보기 좋게 변환 (예: 'permission_denied' -> 'Permission Denied')
+                    error_title = error_type.replace('_', ' ').title()
+                    problem_summary_list.append(f"▶ {error_title} ({len(files)}개):")
+                    self.log_text.insert(tk.END, f"▶ {error_title} ({len(files)}개):\n")
+                    for f in files[:5]: # 최대 5개까지만 예시로 표시
+                        file_name = f.get("file_name", "N/A")
+                        message = f.get("message", "N/A")
+                        log_entry = f"   - {file_name}: {message}\n"
+                        problem_summary_list.append(f"   - {file_name}")
+                        self.log_text.insert(tk.END, log_entry)
+                    if len(files) > 5:
+                        problem_summary_list.append("   ...")
+                        self.log_text.insert(tk.END, "   ...\n")
+
+
+        # 최종 완료 메시지 박스 생성
+        completion_msg = f"번역 적용 작업이 완료되었습니다.\n\n"
+        completion_msg += f"✅ 처리 성공: {processed_count}개 파일\n"
+        if error_count > 0:
+            completion_msg += f"❌ 처리 실패: {error_count}개 파일\n"
+        completion_msg += f"🔄 총 업데이트된 항목 수: {total_updated}개\n"
+        
+        if total_problem_files > 0:
+            problem_detail = "\n\n" + "\n".join(problem_summary_list)
+            # 메시지 박스에 표시할 내용 길이 제한
+            if len(problem_detail) > 1000:
+                problem_detail = problem_detail[:1000] + "\n..."
             completion_msg += problem_detail
-            self.log_text.insert(tk.END, f"\n처리하지 못한 파일 ({total_problem_files}개):\n")
-            for summary in problem_summary:
-                self.log_text.insert(tk.END, f"{summary}\n")
         
         messagebox.showinfo("완료", completion_msg, parent=self)
+
+
+    def _check_files_are_open(self, file_paths_to_check):
+        """
+        주어진 파일 경로 목록을 확인하여 열려 있는 파일이 있는지 검사합니다.
+        파일을 리네임하는 방식으로 잠금 상태를 확인하며, 이는 Windows 환경에서 효과적입니다.
+        """
+        open_files = []
+        for file_path in file_paths_to_check:
+            if not os.path.exists(file_path):
+                continue
+            try:
+                # 파일을 자기 자신으로 리네임 시도. 파일이 열려있으면 OSError(PermissionError) 발생
+                os.rename(file_path, file_path)
+            except OSError:
+                open_files.append(os.path.basename(file_path))
+        return open_files
+    
+    # tools/translation_apply_tool.py
+
+    def show_loaded_data_viewer(self):
+        """로드된 번역 데이터를 보여주는 새 창을 엽니다."""
+        if not hasattr(self.translation_apply_manager, 'translation_cache') or not self.translation_apply_manager.translation_cache:
+            messagebox.showinfo("정보", "먼저 번역 데이터를 로드해주세요.", parent=self)
+            return
+
+        viewer_win = tk.Toplevel(self)
+        viewer_win.title("로드된 번역 데이터 보기")
+        viewer_win.geometry("1200x700")
+        viewer_win.transient(self)
+        viewer_win.grab_set()
+
+        # --- 상단 검색 프레임 ---
+        search_frame = ttk.Frame(viewer_win, padding="5")
+        search_frame.pack(fill="x")
+        
+        ttk.Label(search_frame, text="STRING_ID:").pack(side="left", padx=(0, 2))
+        id_search_var = tk.StringVar()
+        id_search_entry = ttk.Entry(search_frame, textvariable=id_search_var, width=30)
+        id_search_entry.pack(side="left", padx=(0, 10))
+
+        ttk.Label(search_frame, text="KR:").pack(side="left", padx=(0, 2))
+        kr_search_var = tk.StringVar()
+        kr_search_entry = ttk.Entry(search_frame, textvariable=kr_search_var, width=40)
+        kr_search_entry.pack(side="left", padx=(0, 10))
+
+        # --- 중간 데이터 표시 프레임 (Treeview) ---
+        tree_frame = ttk.Frame(viewer_win, padding="5")
+        tree_frame.pack(fill="both", expand=True)
+
+        columns = ("string_id", "kr", "en", "cn", "tw", "th", "file_name", "sheet_name")
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+        
+        # 컬럼 헤더 설정
+        tree.heading("string_id", text="STRING_ID")
+        tree.heading("kr", text="KR")
+        tree.heading("en", text="EN")
+        tree.heading("cn", text="CN")
+        tree.heading("tw", text="TW")
+        tree.heading("th", text="TH")
+        tree.heading("file_name", text="파일명")
+        tree.heading("sheet_name", text="시트명")
+
+        # 컬럼 너비 설정
+        tree.column("string_id", width=150)
+        tree.column("kr", width=250)
+        tree.column("en", width=200)
+        tree.column("cn", width=200)
+        tree.column("tw", width=200)
+        tree.column("th", width=100)
+        tree.column("file_name", width=150)
+        tree.column("sheet_name", width=150)
+
+        # 스크롤바 추가
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        vsb.pack(side="right", fill="y")
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        hsb.pack(side="bottom", fill="x")
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.pack(fill="both", expand=True)
+
+        # --- 하단 상태 표시줄 ---
+        status_frame = ttk.Frame(viewer_win, padding="5")
+        status_frame.pack(fill="x")
+        status_label = ttk.Label(status_frame, text="데이터 준비 중...")
+        status_label.pack(side="left")
+
+        # --- 데이터 처리 및 함수 ---
+        # 원본 데이터 준비 (STRING_ID를 각 딕셔너리에 포함시켜 관리 용이성 증대)
+        all_data = []
+        for string_id, data_dict in self.translation_apply_manager.translation_cache.items():
+            item = data_dict.copy()
+            item['string_id'] = string_id
+            all_data.append(item)
+
+        def populate_tree(data_to_show):
+            """Treeview를 주어진 데이터로 채우는 함수"""
+            # 기존 데이터 삭제 (성능을 위해 보이지 않게 처리)
+            tree.delete(*tree.get_children())
+            
+            # 새 데이터 추가
+            for item in data_to_show:
+                values = (
+                    item.get('string_id', ''),
+                    item.get('kr', ''),
+                    item.get('en', ''),
+                    item.get('cn', ''),
+                    item.get('tw', ''),
+                    item.get('th', ''),
+                    item.get('file_name', ''),
+                    item.get('sheet_name', '')
+                )
+                tree.insert("", "end", values=values)
+            status_label.config(text=f"{len(data_to_show):,} / {len(all_data):,}개 항목 표시 중")
+
+        def perform_search():
+            """검색 버튼 클릭 시 필터링 수행"""
+            id_query = id_search_var.get().lower().strip()
+            kr_query = kr_search_var.get().lower().strip()
+
+            if not id_query and not kr_query:
+                populate_tree(all_data)
+                return
+
+            # 필터링 로직
+            filtered_data = []
+            for item in all_data:
+                id_match = (id_query in item.get('string_id', '').lower()) if id_query else True
+                kr_match = (kr_query in item.get('kr', '').lower()) if kr_query else True
+                
+                if id_match and kr_match:
+                    filtered_data.append(item)
+            
+            populate_tree(filtered_data)
+
+        def reset_search():
+            """검색 조건 초기화"""
+            id_search_var.set("")
+            kr_search_var.set("")
+            populate_tree(all_data)
+
+        # --- 검색 버튼과 함수 연결 ---
+        search_button = ttk.Button(search_frame, text="검색", command=perform_search)
+        search_button.pack(side="left", padx=5)
+        reset_button = ttk.Button(search_frame, text="초기화", command=reset_search)
+        reset_button.pack(side="left", padx=5)
+        
+        # 엔터 키로 검색 실행
+        id_search_entry.bind("<Return>", lambda event: perform_search())
+        kr_search_entry.bind("<Return>", lambda event: perform_search())
+
+        # --- 초기 데이터 로드 ---
+        populate_tree(all_data)
