@@ -244,10 +244,12 @@ class TranslationApplyManager:
         return None
 
 
-    def apply_translation(self, file_path, selected_langs, record_date=True, kr_match_check=False, kr_mismatch_delete=False, apply_by_request_col=False, target_columns=None, smart_translation=True):
+# tools/translation_apply_manager.py 의 apply_translation 함수를 아래 코드로 교체
+
+    def apply_translation(self, file_path, selected_langs, record_date=True, kr_match_check=False, kr_mismatch_delete=False, allowed_statuses=None, smart_translation=True):
         """
         파일에 번역 적용 (기능 개선 최종 버전)
-        - KR 불일치 시 제거 로직 수정, 로직 흐름 개선
+        - [수정] allowed_statuses를 받아 조건부 적용 로직 변경
         """
         if not self.translation_cache:
             return {"status": "error", "message": "번역 캐시가 로드되지 않았습니다.", "error_type": "cache_not_loaded"}
@@ -273,6 +275,9 @@ class TranslationApplyManager:
             
             fill_green = PatternFill(start_color="DAF2D0", end_color="DAF2D0", fill_type="solid")
             
+            # [수정] 소문자로 비교하기 위해 미리 변환
+            allowed_statuses_lower = [status.lower() for status in allowed_statuses] if allowed_statuses else []
+
             for sheet_name in string_sheets:
                 worksheet = workbook[sheet_name]
                 string_id_col, header_row = self.find_string_id_position(worksheet)
@@ -282,7 +287,8 @@ class TranslationApplyManager:
                 lang_cols = self.find_language_columns(worksheet, header_row, selected_langs + ['KR'])
                 
                 request_col_idx = None
-                if apply_by_request_col:
+                # [수정] allowed_statuses가 있을 때만 #번역요청 컬럼을 찾음
+                if allowed_statuses_lower:
                     request_col_idx = self.find_target_columns(worksheet, header_row, ["#번역요청"]).get("#번역요청")
                     if not request_col_idx:
                         self.log_message(f"  - {sheet_name}: '#번역요청' 컬럼을 찾을 수 없어 조건부 적용을 건너뜁니다.")
@@ -294,11 +300,13 @@ class TranslationApplyManager:
                 sheet_updated_count = 0
                 
                 for row_idx in range(header_row + 1, worksheet.max_row + 1):
-                    if apply_by_request_col and request_col_idx:
+                    # --- [수정] 조건부 적용 로직 ---
+                    if allowed_statuses_lower and request_col_idx:
                         request_val = str(worksheet.cell(row=row_idx, column=request_col_idx).value or '').strip().lower()
-                        if request_val not in ['신규', 'change']:
+                        if request_val not in allowed_statuses_lower:
                             total_conditional_skipped += 1
                             continue
+                    # --- 로직 수정 끝 ---
 
                     string_id = str(worksheet.cell(row=row_idx, column=string_id_col).value or '').strip()
                     if not string_id:
@@ -313,8 +321,6 @@ class TranslationApplyManager:
                     
                     row_modified_this_iteration = False
                     
-                    # <<< [수정] KR 불일치 시 로직 흐름 변경 >>>
-                    # KR 불일치 여부 먼저 확인
                     kr_mismatched = False
                     if kr_match_check and 'KR' in lang_cols:
                         current_kr_value = str(worksheet.cell(row=row_idx, column=lang_cols['KR']).value or '').strip()
@@ -322,10 +328,8 @@ class TranslationApplyManager:
                         if current_kr_value != cache_kr_value:
                             kr_mismatched = True
 
-                    # KR 불일치 시의 행동 결정
                     if kr_mismatched:
                         if kr_mismatch_delete:
-                            # 다국어 제거 옵션이 켜진 경우, 제거 작업을 하고 '수정'으로 처리
                             for lang in selected_langs:
                                 if lang == 'KR': continue
                                 if lang in lang_cols:
@@ -335,11 +339,9 @@ class TranslationApplyManager:
                             if row_modified_this_iteration:
                                 total_kr_mismatch_deleted += 1
                         else:
-                            # 다국어 제거 옵션이 꺼진 경우, 이 행의 처리를 건너뜀
                             total_kr_mismatch_skipped += 1
-                            continue # 다음 행으로
+                            continue
                     else:
-                        # KR이 일치하거나 검사 옵션이 꺼진 경우, 번역 적용 시도
                         for lang in selected_langs:
                             if lang in lang_cols and trans_data.get(lang.lower()):
                                 current_value = worksheet.cell(row=row_idx, column=lang_cols[lang]).value
@@ -349,7 +351,6 @@ class TranslationApplyManager:
                                     worksheet.cell(row=row_idx, column=lang_cols[lang]).fill = fill_green
                                     row_modified_this_iteration = True
                     
-                    # 해당 행에 어떤 종류든 수정이 있었다면 후처리 수행
                     if row_modified_this_iteration:
                         sheet_updated_count += 1
                         file_modified = True
@@ -360,7 +361,7 @@ class TranslationApplyManager:
                 if sheet_updated_count > 0 or total_kr_mismatch_deleted > 0:
                      self.log_message(f"  - {sheet_name}: {sheet_updated_count}개 행에 변경사항 적용 완료")
                 total_updated += sheet_updated_count
-                
+            
             if file_modified:
                 self.log_message(f"  💾 openpyxl로 파일 저장 중...")
                 workbook.save(file_path)
@@ -383,7 +384,7 @@ class TranslationApplyManager:
             if workbook:
                 workbook.close()
                 self.log_message(f"  ✔️ 파일 핸들 해제 완료: {file_name}")
-
+                
         
     def check_external_links(self, workbook):
         """워크북에서 외부 링크 검사 (번역 도구용) - 검증된 최종 버전"""

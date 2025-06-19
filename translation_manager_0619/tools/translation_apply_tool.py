@@ -39,6 +39,7 @@ class TranslationApplyTool(tk.Frame):
         self.kr_match_check_var = tk.BooleanVar(value=True)
         self.kr_mismatch_delete_var = tk.BooleanVar(value=False)
         self.apply_by_request_col_var = tk.BooleanVar(value=True)
+        self.apply_on_transferred_var = tk.BooleanVar(value=False)
         
         # 데이터 미리보기 버튼을 위한 변수
         self.view_data_button = None
@@ -116,9 +117,16 @@ class TranslationApplyTool(tk.Frame):
         self.kr_mismatch_cb = ttk.Checkbutton(kr_check_frame, text="└ KR 불일치 시 다국어 제거", variable=self.kr_mismatch_delete_var)
         self.kr_mismatch_cb.pack(side="left", padx=5)
 
-        conditional_frame = ttk.Frame(options_frame)
-        conditional_frame.pack(fill="x", padx=5, pady=2, anchor="w")
-        ttk.Checkbutton(conditional_frame, text='#번역요청이 "신규" 또는 "change"일 때만 적용', variable=self.apply_by_request_col_var).pack(side="left", padx=5)
+        conditional_frame = ttk.LabelFrame(options_frame, text="조건부 적용") # LabelFrame으로 변경하여 그룹화
+        conditional_frame.pack(fill="x", padx=5, pady=2)
+        
+        cond_inner_frame = ttk.Frame(conditional_frame)
+        cond_inner_frame.pack(pady=2, padx=5)
+
+        ttk.Label(cond_inner_frame, text="#번역요청 컬럼 값이 다음과 같을 때만 적용:").pack(side="left", anchor="w")
+        ttk.Checkbutton(cond_inner_frame, text="신규", variable=self.apply_on_new_var).pack(side="left", padx=(10, 5))
+        ttk.Checkbutton(cond_inner_frame, text="change", variable=self.apply_on_change_var).pack(side="left", padx=5)
+        ttk.Checkbutton(cond_inner_frame, text="전달", variable=self.apply_on_transferred_var).pack(side="left", padx=5)
         
         other_frame = ttk.Frame(options_frame)
         other_frame.pack(fill="x", padx=5, pady=2, anchor="w")
@@ -388,7 +396,13 @@ class TranslationApplyTool(tk.Frame):
         
         kr_match_check = self.kr_match_check_var.get()
         kr_mismatch_delete = self.kr_mismatch_delete_var.get()
-        apply_by_request_col = self.apply_by_request_col_var.get()
+        allowed_statuses = []
+        if self.apply_on_new_var.get():
+            allowed_statuses.append('신규')
+        if self.apply_on_change_var.get():
+            allowed_statuses.append('change')
+        if self.apply_on_transferred_var.get():
+            allowed_statuses.append('전달')
             
         def apply_translations():
             total_updated = 0
@@ -411,13 +425,14 @@ class TranslationApplyTool(tk.Frame):
                 ])
                     
                 try:
+                    # [수정] allowed_statuses 리스트를 인자로 전달합니다.
                     result = self.translation_apply_manager.apply_translation(
                         file_path, 
                         selected_langs, 
                         self.record_date_var.get(),
                         kr_match_check=kr_match_check,
                         kr_mismatch_delete=kr_mismatch_delete,
-                        apply_by_request_col=apply_by_request_col,
+                        allowed_statuses=allowed_statuses, # 수정된 인자
                         smart_translation=False 
                     )
                         
