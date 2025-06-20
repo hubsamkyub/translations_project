@@ -1,0 +1,13 @@
+{
+  "data_path": "C:/Users/mage_/Desktop/fow/KR_DB_250430",
+  "presets": {
+    "1": {
+      "name": "KR 개발",
+      "data": "C:\\LOH_Trunk\\Assets\\DB"
+    },
+    "2": {
+      "name": "TW 개발",
+      "data": "C:\\LegendOfHeroes_TW\\Assets\\DB"
+    }
+  }
+}
