@@ -132,8 +132,20 @@ class TranslationRequestExtractor(tk.Frame):
                 return {k: v.upper() for k, v in header_map.items()}, i
         return None, -1
         
+    # tools/translation_request_extractor.py
     def _update_files_as_transferred(self, files_to_update, col_name_to_find, new_value):
+        # ▼▼▼ [수정] 파일 저장 전, 파일이 열려있는지 확인하는 로직 추가 ▼▼▼
+        target_file_paths = list(files_to_update.keys())
+        open_files = self._check_files_are_open(target_file_paths)
+        if open_files:
+            error_message = "다음 파일이 열려있어 '전달' 상태로 업데이트할 수 없습니다. 파일을 닫고 다시 시도해주세요:\n\n" + "\n".join(open_files)
+            self.log(f"파일 업데이트 취소: 다음 파일이 열려있음 - {', '.join(open_files)}")
+            show_message(self.parent_app.root, "warning", "작업 중단", error_message)
+            return
+        # ▲▲▲ 여기까지 추가 ▲▲▲
+
         for file_path, sheets in files_to_update.items():
+            wb = None # finally를 위해 wb 초기화
             try:
                 wb = load_workbook(file_path)
                 for sheet_name, row_indices in sheets.items():
@@ -141,17 +153,34 @@ class TranslationRequestExtractor(tk.Frame):
                         ws = wb[sheet_name]
                         headers, _ = self._find_headers_in_worksheet(ws)
                         if not headers: continue
-                        
+
                         col_idx = None
                         for c_idx, c_name in headers.items():
                             if c_name.upper() == col_name_to_find.upper():
                                 col_idx = c_idx
                                 break
-                        
+
                         if col_idx:
                             for row_idx in row_indices:
                                 ws.cell(row=row_idx, column=col_idx).value = new_value
                 wb.save(file_path)
-                self.log_message(f"'{os.path.basename(file_path)}' 파일 업데이트 완료.")
+                self.log(f"'{os.path.basename(file_path)}' 파일 업데이트 완료.")
             except Exception as e:
-                self.log_message(f"파일 업데이트 실패 '{os.path.basename(file_path)}': {e}")
+                self.log(f"파일 업데이트 실패 '{os.path.basename(file_path)}': {e}")
+            finally:
+                # wb.save() 이후에는 close()가 의미 없지만, 로드 후 저장 실패 시를 대비
+                if wb:
+                    pass
+
+    def _check_files_are_open(self, file_paths_to_check):
+        """주어진 파일 경로 목록을 확인하여 열려 있는 파일이 있는지 검사합니다."""
+        open_files = []
+        for file_path in file_paths_to_check:
+            if not os.path.exists(file_path):
+                continue
+            try:
+                # 파일을 자기 자신으로 리네임 시도. 파일이 열려있으면 OSError 발생
+                os.rename(file_path, file_path)
+            except OSError:
+                open_files.append(os.path.basename(file_path))
+        return open_files

@@ -1,6 +1,11 @@
 {
-  "data_path": "C:\\LegendOfHeroes_TW\\Assets\\DB",
-  "presets": {},
-  "source_path": "C:/LOH_Trunk/Assets/DB",
-  "target_path": "C:/LegendOfHeroes_TW/Assets/DB"
+  "SPECIAL_COLUMN_NAMES": [
+    "번역요청",
+    "수정요청",
+    "Help",
+    "원문",
+    "번역요청2",
+    "번역추가",
+    "번역적용"
+  ]
 }
