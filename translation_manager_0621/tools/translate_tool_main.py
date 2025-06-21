@@ -26,6 +26,7 @@ from tools.excel_split_tool import ExcelSplitTool
 from tools.word_replacement_tool import WordReplacementTool
 from tools.translation_request_extractor import TranslationRequestExtractor
 from tools.translation_workflow_tool import TranslationWorkflowTool
+from tools.advanced_excel_diff_tool import AdvancedExcelDiffTool
 
 
 class TranslationAutomationTool(tk.Frame):
@@ -120,6 +121,10 @@ class TranslationAutomationTool(tk.Frame):
             translation_request_extractor.pack(fill="both", expand=True)
         except ImportError as e:
             ttk.Label(self.translation_request_frame, text=f"번역 요청 추출 모듈 로드 오류:\n{e}").pack(pady=20)
+        
+        # 엑셀 비교    
+        advanced_excel_diff_tab = AdvancedExcelDiffTool(self.notebook)
+        self.notebook.add(advanced_excel_diff_tab, text="[신규] 고급 엑셀 비교")
 
 
 if __name__ == "__main__":

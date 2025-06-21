@@ -1,4 +1,4 @@
-# translation_db_manager.py에 추가할 내용
+# translation_db_manager.py 수정 사항
 
 import sqlite3
 import os
@@ -31,34 +31,58 @@ class TranslationDBManager:
         return None, None
 
     def find_language_columns(self, worksheet, header_row, langs, language_mapping=None):
-        """STRING_ID 행 기준으로 언어 컬럼 위치 탐색 (ZH/CN 등 매핑 포함)"""
+        """STRING_ID 행 기준으로 언어 컬럼 위치 탐색 (대소문자 구분 없이 매핑)"""
         if not header_row:
             return {}
 
         lang_cols = {}
         
-        # 역방향 매핑 준비 (예: CN → [ZH])
-        reverse_mapping = {}
+        # 대소문자를 구분하지 않는 언어 목록 생성
+        langs_upper = [lang.upper() for lang in langs]
+        
+        # 기본 언어 매핑에 대소문자 변형 추가
+        extended_mapping = {}
         if language_mapping:
             for alt, main in language_mapping.items():
-                reverse_mapping.setdefault(main, []).append(alt)
+                extended_mapping[alt.upper()] = main.upper()
+                extended_mapping[alt.lower()] = main.upper()
+        
+        # 일반적인 언어 코드 매핑 추가
+        common_mappings = {
+            'cn': 'CN', 'zh': 'CN', 'zh_cn': 'CN',
+            'tw': 'TW', 'zh_tw': 'TW', 
+            'kr': 'KR', 'ko': 'KR',
+            'en': 'EN', 'eng': 'EN',
+            'th': 'TH', 'thai': 'TH'
+        }
+        
+        for alt, main in common_mappings.items():
+            extended_mapping[alt.upper()] = main
+            extended_mapping[alt.lower()] = main
 
-        # 지정한 헤더 행에서만 검색 (빠르게)
+        # 지정한 헤더 행에서만 검색
         for row in worksheet.iter_rows(min_row=header_row, max_row=header_row):
             for cell in row:
                 if not cell.value:
                     continue
 
                 header_text = str(cell.value).strip()
+                header_upper = header_text.upper()
 
-                # 직접 매칭
-                if header_text in langs:
-                    lang_cols[header_text] = cell.column
-                    continue
+                # 직접 매칭 (대소문자 구분 없이)
+                if header_upper in langs_upper:
+                    target_lang = None
+                    for lang in langs:
+                        if lang.upper() == header_upper:
+                            target_lang = lang
+                            break
+                    if target_lang and target_lang not in lang_cols:
+                        lang_cols[target_lang] = cell.column
+                        continue
 
-                # ZH 같은 대체 키 → CN 등으로 매핑
-                if language_mapping and header_text in language_mapping:
-                    mapped_lang = language_mapping[header_text]
+                # 매핑을 통한 간접 매칭
+                if header_text in extended_mapping:
+                    mapped_lang = extended_mapping[header_text]
                     if mapped_lang in langs and mapped_lang not in lang_cols:
                         lang_cols[mapped_lang] = cell.column
 
@@ -87,176 +111,63 @@ class TranslationDBManager:
         cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_file_sheet ON {table_name}(file_name, sheet_name)')
         cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_status ON {table_name}(status)')
 
-    def update_translation_db(self, excel_files, db_path, language_list, batch_size=2000, use_read_only=True, progress_callback=None):
-        """번역 DB 업데이트 함수 (A열 # 체크 기능 추가)"""
+    def update_translation_db(self, excel_files, db_path, language_list, batch_size=2000, use_read_only=True, progress_callback=None, update_option="default", debug_string_id=None):
+
         if not excel_files:
             return {"status": "error", "message": "번역 파일이 선택되지 않았습니다."}
-            
-        if not db_path:
-            return {"status": "error", "message": "DB 파일 경로가 지정되지 않았습니다."}
-        
-        if not os.path.exists(db_path):
-            return {"status": "error", "message": "기존 DB 파일이 존재하지 않습니다. 먼저 DB를 구축해주세요."}
-            
-        selected_langs = language_list
-        if not selected_langs:
+        if not db_path or not os.path.exists(db_path):
+            return {"status": "error", "message": "유효한 DB 파일 경로를 지정하세요."}
+        if not language_list:
             return {"status": "error", "message": "하나 이상의 언어를 선택하세요."}
-        
-        language_mapping = {
-            "ZH": "CN",
-        }
-        
+
+        language_mapping = {"ZH": "CN"}
+        conn = None
         try:
             conn = sqlite3.connect(db_path)
-            conn.execute("PRAGMA journal_mode = WAL")
-            conn.execute("PRAGMA synchronous = NORMAL")
-            conn.execute("PRAGMA cache_size = 10000")
             cursor = conn.cursor()
-            
-            self._update_table_schema(cursor)
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            existing_data = self._load_existing_data_by_string_id(cursor)
-            
-            total_rows = 0
-            processed_count = 0
+
+            self._update_table_schema(cursor) # 스키마는 항상 최신으로 유지
+
+            # 옵션에 따라 DB 데이터를 적절한 Key로 메모리에 로드
+            db_data_map = self._load_existing_data(cursor, update_option)
+
+            updates, inserts = [], []
+            processed_files_count = 0
             error_count = 0
-            updated_rows = 0
-            new_rows = 0
-            batch_data = []
-            
+
+            # 엑셀 파일 순회 및 데이터 처리
             for idx, (file_name, file_path) in enumerate(excel_files):
                 if progress_callback:
-                    progress_callback(f"파일 ({idx+1}/{len(excel_files)}) {file_name} 처리 중...", 
-                                    idx+1, len(excel_files))
-                
+                    progress_callback(f"파일 ({idx+1}/{len(excel_files)}) {file_name} 처리 중...", idx+1, len(excel_files))
+
                 try:
-                    gc.collect()
-                    workbook = load_workbook(file_path, read_only=use_read_only, data_only=True)
-                    
-                    string_sheets = [sheet for sheet in workbook.sheetnames 
-                                if sheet.lower().startswith("string") and not sheet.startswith("#")]
-                    
-                    for sheet_name in string_sheets:
-                        worksheet = workbook[sheet_name]
-                        
-                        string_id_col, header_row = self.find_string_id_position(worksheet)
-                        if not string_id_col or not header_row:
-                            continue
-                        
-                        lang_cols = self.find_language_columns(worksheet, header_row, selected_langs, language_mapping)
-                        if not lang_cols:
-                            continue
-                        
-                        max_row = worksheet.max_row
-                        
-                        for row_cells in worksheet.iter_rows(min_row=header_row + 1, max_row=max_row, values_only=True):                            
-                            if not row_cells or string_id_col - 1 >= len(row_cells):
-                                continue
-                            string_id = row_cells[string_id_col - 1]
-                            if not string_id:
-                                continue
-                            
-                            first_col_val = str(row_cells[0] or '').strip()
-                            status = '비활성' if first_col_val.startswith('#') else 'active'
-                            
-                            values = {"string_id": string_id}
-                            has_translation = False
-                            
-                            for lang, col in lang_cols.items():
-                                if col - 1 < len(row_cells):
-                                    cell_value = row_cells[col - 1]
-                                    mapped_lang = language_mapping.get(lang.upper(), lang).lower()
-                                    values[mapped_lang] = cell_value
-                                    if cell_value:
-                                        has_translation = True
-                            
-                            if string_id in existing_data:
-                                existing_row = existing_data[string_id]
-                                update_needed = False
-                                
-                                if existing_row.get('status') != status:
-                                    update_needed = True
-
-                                if not update_needed:
-                                    for lang in selected_langs:
-                                        lang_key = lang.lower()
-                                        if values.get(lang_key) is not None and existing_row.get(lang_key) != values.get(lang_key):
-                                            update_needed = True
-                                            break
-                                
-                                if update_needed:
-                                    update_data = {
-                                        'string_id': string_id,
-                                        'status': status,
-                                        'update_date': current_time,
-                                        'file_name': file_name,
-                                        'sheet_name': sheet_name
-                                    }
-                                    for lang in ['kr', 'en', 'cn', 'tw', 'th']:
-                                        update_data[lang] = values.get(lang, existing_row.get(lang))
-                                    batch_data.append(('update', update_data))
-                                    updated_rows += 1
-                            else:
-                                if has_translation:
-                                    insert_data = {
-                                        'string_id': string_id,
-                                        'status': status,
-                                        'update_date': current_time,
-                                        'file_name': file_name,
-                                        'sheet_name': sheet_name
-                                    }
-                                    for lang in ['kr', 'en', 'cn', 'tw', 'th']:
-                                        insert_data[lang] = values.get(lang)
-                                    batch_data.append(('insert', insert_data))
-                                    new_rows += 1
-                            
-                            if len(batch_data) >= batch_size:
-                                self._process_batch_data(cursor, batch_data)
-                                total_rows += len(batch_data)
-                                batch_data = []
-                                gc.collect()
-                    
-                    workbook.close()
-                    del workbook
-                    processed_count += 1
-                    
+                    self._process_single_excel_for_update(
+                        file_path, file_name, language_list, language_mapping, 
+                        db_data_map, update_option, updates, inserts, debug_string_id
+                    )
+                    processed_files_count += 1
                 except Exception as e:
-                    if progress_callback:
-                        progress_callback(f"파일 처리 오류: {e}", idx+1, len(excel_files))
                     error_count += 1
-            
-            if batch_data:
-                self._process_batch_data(cursor, batch_data)
-                total_rows += len(batch_data)
-            
-            if progress_callback:
-                progress_callback("DB 최적화 중...", len(excel_files), len(excel_files))
-            
-            cursor.execute("PRAGMA optimize")
-            conn.commit()
-            conn.close()
-            
-            return {
-                "status": "success",
-                "processed_count": processed_count,
-                "error_count": error_count,
-                "total_rows": total_rows,
-                "updated_rows": updated_rows,
-                "new_rows": new_rows,
-                "deleted_rows": 0
-            }
-            
-        except Exception as e:
-            try:
-                conn.close()
-            except:
-                pass
-                
-            return {
-                "status": "error",
-                "message": str(e)
-            }
+                    print(f"파일 처리 오류 ({file_name}): {e}")
 
+            # 배치 처리
+            updated_row_count = self._execute_batch_update(cursor, updates, language_list, update_option)
+            new_row_count = self._execute_batch_insert(cursor, inserts, language_list)
+
+            conn.commit()
+            cursor.execute("PRAGMA optimize")
+
+            return {
+                "status": "success", "processed_count": processed_files_count, "error_count": error_count,
+                "total_rows": updated_row_count + new_row_count, "updated_rows": updated_row_count, "new_rows": new_row_count,
+                "deleted_rows": 0 
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+                
     def _update_table_schema(self, cursor):
         """테이블 스키마 업데이트 (status, update_date 컬럼 추가)"""
         try:
@@ -381,9 +292,6 @@ class TranslationDBManager:
                 print(f"배치 처리 오류: {e}")
                 continue
 
-    # 기존 build_translation_db 메서드는 그대로 유지
-# build_translation_db 함수를 아래 코드로 교체합니다.
-
     def build_translation_db(self, excel_files, output_db_path, language_list, batch_size=2000, use_read_only=True, progress_callback=None):
         """번역 DB 구축 함수 (A열 # 체크 기능 추가)"""
         if not excel_files:
@@ -438,7 +346,7 @@ class TranslationDBManager:
                             if not row_cells or not row_cells[string_id_col - 1]:
                                 continue
 
-                            # [수정] A열 값을 확인하여 status 결정
+                            # A열 값을 확인하여 status 결정
                             first_col_val = str(row_cells[0] or '').strip()
                             status = '비활성' if first_col_val.startswith('#') else 'active'
 
@@ -458,7 +366,7 @@ class TranslationDBManager:
                                     file_name, sheet_name, values["string_id"],
                                     values.get("kr"), values.get("en"), values.get("cn"), 
                                     values.get("tw"), values.get("th"),
-                                    status, # [수정] 결정된 status 값 사용
+                                    status,
                                     current_time
                                 ))
                                 
@@ -488,7 +396,6 @@ class TranslationDBManager:
             if 'conn' in locals() and conn: conn.close()
             return {"status": "error", "message": str(e)}
         
-    # 기존 load_translation_cache 메서드도 유지하되 status 필터링 추가
     def load_translation_cache(self, db_path):
         """번역 DB를 메모리에 캐싱 (활성 상태만)"""
         try:
@@ -567,3 +474,212 @@ class TranslationDBManager:
                 "status": "error",
                 "message": str(e)
             }
+
+    def _load_existing_data(self, cursor, update_option):
+        """업데이트 옵션에 따라 DB 데이터를 적절한 key로 메모리에 로드합니다."""
+        cursor.execute("SELECT * FROM translation_data")
+        db_data_map = {}
+        for row in cursor.fetchall():
+            row_dict = {desc[0]: value for desc, value in zip(cursor.description, row)}
+            key = None
+            if update_option == "kr_compare":
+                if row_dict.get('kr'): # KR 값이 있는 경우에만
+                    key = row_dict['kr']
+            elif update_option == "kr_additional_compare":
+                if row_dict.get('string_id') and row_dict.get('kr'):
+                    key = (row_dict['string_id'], row_dict['kr'])
+            else: # "default", "kr_overwrite"
+                key = row_dict.get('string_id')
+
+            if key and key not in db_data_map:
+                db_data_map[key] = row_dict
+        return db_data_map
+
+    def _process_single_excel_for_update(self, file_path, file_name, language_list, language_mapping, db_data_map, update_option, updates, inserts, debug_string_id=None):
+        """단일 엑셀 파일을 순회하며 업데이트/삽입할 데이터를 수집합니다. (수정된 버전)"""
+        workbook = load_workbook(file_path, read_only=True, data_only=True)
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        for sheet_name in workbook.sheetnames:
+            if not sheet_name.lower().startswith('string') or sheet_name.startswith("#"):
+                continue
+
+            worksheet = workbook[sheet_name]
+            string_id_col, header_row = self.find_string_id_position(worksheet)
+            if not string_id_col or not header_row: continue
+
+            lang_cols = self.find_language_columns(worksheet, header_row, language_list, language_mapping)
+            if not lang_cols: continue
+
+            print(f"파일 {file_name}에서 발견된 언어 컬럼: {lang_cols}")
+
+            for row_cells in worksheet.iter_rows(min_row=header_row + 1, values_only=True):
+                if not row_cells or string_id_col - 1 >= len(row_cells): continue
+
+                string_id = row_cells[string_id_col - 1]
+                if not string_id: continue
+
+                # 디버깅 ID와 일치하는 경우, 상세 로그
+                is_debug_target = (string_id == debug_string_id)
+                if is_debug_target:
+                    print("\n" + "="*60)
+                    print(f"DEBUG: STRING_ID '{string_id}' 추적 시작")
+                    print(f"파일: {file_name}, 시트: {sheet_name}")
+                    print("="*60)
+
+                # 엑셀 데이터 추출 (표준화된 키 사용)
+                excel_data = {'string_id': string_id}
+                for lang, col_idx in lang_cols.items():
+                    if col_idx - 1 < len(row_cells):
+                        # 모든 언어 키를 소문자로 통일
+                        lang_key = lang.lower()
+                        excel_data[lang_key] = row_cells[col_idx - 1]
+
+                if is_debug_target:
+                    print(f"엑셀에서 추출한 데이터: {excel_data}")
+
+                status = '비활성' if str(row_cells[0] or '').strip().startswith('#') else 'active'
+
+                # 키 생성
+                key = None
+                if update_option == "kr_compare":
+                    key = excel_data.get('kr')
+                elif update_option == "kr_additional_compare":
+                    key = (excel_data.get('string_id'), excel_data.get('kr'))
+                else:
+                    key = excel_data.get('string_id')
+
+                if is_debug_target:
+                    print(f"업데이트 옵션: {update_option}")
+                    print(f"생성된 키: {key}")
+                    print(f"DB에 키가 존재하는가: {key in db_data_map if key else False}")
+
+                # DB에 키가 있는지 확인
+                if key and key in db_data_map:
+                    db_row = db_data_map[key]
+                    update_needed = False
+
+                    if is_debug_target:
+                        print(f"DB에서 찾은 기존 데이터: {db_row}")
+
+                    # 상태 변경 체크
+                    if db_row.get('status') != status:
+                        update_needed = True
+                        if is_debug_target:
+                            print(f"상태 변경 감지: DB='{db_row.get('status')}', 엑셀='{status}' -> 업데이트 필요")
+
+                    # 언어 값 변경 체크 (상태가 동일할 때만)
+                    if not update_needed:
+                        # 업데이트할 언어 목록 결정
+                        update_langs = language_list.copy()
+                        if update_option in ['default', 'kr_additional_compare'] and 'KR' in update_langs:
+                            update_langs.remove('KR')
+
+                        if is_debug_target:
+                            print(f"비교할 언어 목록: {update_langs}")
+
+                        for lang in update_langs:
+                            lang_key = lang.lower()
+                            excel_val = excel_data.get(lang_key)
+                            db_val = db_row.get(lang_key)
+
+                            # 공백 제거 후 비교
+                            excel_val_clean = str(excel_val or '').strip()
+                            db_val_clean = str(db_val or '').strip()
+
+                            is_different = excel_val_clean != db_val_clean
+
+                            if is_debug_target:
+                                print(f"--- [{lang}] 값 비교 ---")
+                                print(f"  엑셀 원본: {repr(excel_val)}")
+                                print(f"  DB 원본:   {repr(db_val)}")
+                                print(f"  엑셀 정제: '{excel_val_clean}'")
+                                print(f"  DB 정제:   '{db_val_clean}'")
+                                print(f"  다른가?:   {is_different}")
+
+                            if is_different:
+                                update_needed = True
+                                if is_debug_target:
+                                    print(f"[{lang}] 값 변경 감지 -> 업데이트 필요")
+                                break
+
+                    # 업데이트 필요한 경우 목록에 추가
+                    if update_needed:
+                        update_payload = {'key': key}
+                        update_payload.update(excel_data)
+                        update_payload.update({
+                            'status': status, 'update_date': current_time,
+                            'file_name': file_name, 'sheet_name': sheet_name
+                        })
+                        updates.append(update_payload)
+                        if is_debug_target:
+                            print("결론: '업데이트' 목록에 추가됨")
+                    elif is_debug_target:
+                        print("결론: 변경사항 없음 -> 업데이트 안 함")
+
+                else:
+                    # DB에 키가 없으면 신규 삽입
+                    insert_payload = excel_data.copy()
+                    insert_payload.update({
+                        'file_name': file_name, 'sheet_name': sheet_name,
+                        'status': status, 'update_date': current_time
+                    })
+                    inserts.append(insert_payload)
+                    if is_debug_target:
+                        print(f"결론: 키 '{key}'가 DB에 없음 -> '신규 삽입' 목록에 추가됨")
+
+                if is_debug_target:
+                    print("="*60 + "\n")
+
+        workbook.close()
+                        
+    def _execute_batch_update(self, cursor, updates, language_list, update_option):
+        """수집된 업데이트 데이터를 배치 처리합니다."""
+        if not updates: return 0
+
+        # 업데이트할 컬럼 결정 (모두 소문자로 통일)
+        update_cols = [lang.lower() for lang in language_list]
+        if update_option in ["default", "kr_additional_compare"]:
+            if 'kr' in update_cols: update_cols.remove('kr')
+
+        # KR 비교 모드에서는 string_id도 업데이트 가능
+        if update_option == "kr_compare":
+            if 'string_id' not in update_cols: update_cols.append('string_id')
+
+        set_clause = ", ".join([f"{col} = :{col}" for col in update_cols])
+        set_clause += ", status = :status, update_date = :update_date, file_name = :file_name, sheet_name = :sheet_name"
+
+        # WHERE 절 결정
+        where_clause = ""
+        if update_option == "kr_compare":
+            where_clause = "WHERE kr = :key"
+        elif update_option == "kr_additional_compare":
+            where_clause = "WHERE string_id = :key0 AND kr = :key1"
+        else: # default, kr_overwrite
+            where_clause = "WHERE string_id = :key"
+
+        query = f"UPDATE translation_data SET {set_clause} {where_clause}"
+
+        # executemany용 데이터 준비
+        update_params = []
+        for item in updates:
+            params = item.copy()
+            if update_option == "kr_additional_compare":
+                params['key0'] = item['key'][0]
+                params['key1'] = item['key'][1]
+            update_params.append(params)
+
+        cursor.executemany(query, update_params)
+        return cursor.rowcount
+
+    def _execute_batch_insert(self, cursor, inserts, language_list):
+        """수집된 삽입 데이터를 배치 처리합니다."""
+        if not inserts: return 0
+
+        # 모든 컬럼명을 소문자로 통일
+        cols = ['file_name', 'sheet_name', 'string_id', 'status', 'update_date'] + [lang.lower() for lang in language_list]
+        placeholders = ", ".join([f":{col}" for col in cols])
+        query = f"INSERT OR IGNORE INTO translation_data ({', '.join(cols)}) VALUES ({placeholders})"
+
+        cursor.executemany(query, inserts)
+        return cursor.rowcount

@@ -38,8 +38,12 @@ class TranslationApplyTool(tk.Frame):
         # <<< [추가] 새로운 옵션 변수 선언 >>>
         self.kr_match_check_var = tk.BooleanVar(value=True)
         self.kr_mismatch_delete_var = tk.BooleanVar(value=False)
-        self.apply_by_request_col_var = tk.BooleanVar(value=True)
-        self.apply_on_transferred_var = tk.BooleanVar(value=False)
+        
+        # [수정] 조건부 적용을 위한 개별 변수 선언
+        self.apply_on_new_var = tk.BooleanVar(value=True)
+        self.apply_on_change_var = tk.BooleanVar(value=True)
+        self.apply_on_transferred_var = tk.BooleanVar(value=False) # '전달'은 기본 비활성화
+    
         
         # 데이터 미리보기 버튼을 위한 변수
         self.view_data_button = None

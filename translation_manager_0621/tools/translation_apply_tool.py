@@ -55,6 +55,8 @@ class TranslationApplyTool(tk.Frame):
         
         self.setup_ui()
 
+# tools/translation_apply_tool.py
+
     def setup_ui(self):
         """번역 적용 탭 UI 구성 (좌/우 분할 레이아웃)"""
 
@@ -84,7 +86,6 @@ class TranslationApplyTool(tk.Frame):
         ttk.Button(excel_frame, text="찾아보기", command=self.select_excel_source_file).grid(row=0, column=2, padx=5, pady=5)
         
         ttk.Label(excel_frame, text="시트 선택:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        # [수정] 콤보박스 대신 선택된 시트 목록을 보여줄 Entry와 선택 버튼으로 변경
         selected_sheets_entry = ttk.Entry(excel_frame, textvariable=self.selected_sheets_display_var, state="readonly")
         selected_sheets_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         ttk.Button(excel_frame, text="시트 선택", command=self.open_sheet_selection_popup).grid(row=1, column=2, padx=5, pady=5)
@@ -108,7 +109,43 @@ class TranslationApplyTool(tk.Frame):
         options_frame = ttk.LabelFrame(self, text="적용 옵션")
         options_frame.pack(fill="x", padx=5, pady=5)
 
-        lang_frame = ttk.Frame(options_frame)
+        # --- 적용 기준 선택 (ID vs KR) ---
+        self.apply_mode_var = tk.StringVar(value="id")
+        self.apply_mode_var.trace_add("write", self.toggle_options_by_mode)
+        
+        mode_frame = ttk.Frame(options_frame)
+        mode_frame.pack(fill="x", padx=5, pady=2)
+        ttk.Label(mode_frame, text="적용 기준:").pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="ID 기반", variable=self.apply_mode_var, value="id").pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="KR 기반", variable=self.apply_mode_var, value="kr").pack(side="left", padx=5)
+
+        # --- ID 기반 적용 옵션 ---
+        self.id_based_options_frame = ttk.Frame(options_frame)
+        self.id_based_options_frame.pack(fill="x", padx=15, pady=5)
+        
+        self.kr_match_check_var = tk.BooleanVar(value=True)
+        self.kr_mismatch_delete_var = tk.BooleanVar(value=False)
+        self.kr_overwrite_var = tk.BooleanVar(value=False)
+        
+        id_opt1 = ttk.Checkbutton(self.id_based_options_frame, text="KR 일치 검사 (불일치 시 건너뛰기)", variable=self.kr_match_check_var, command=self.toggle_kr_options)
+        id_opt1.pack(side="left", padx=5)
+        self.id_mismatch_delete_cb = ttk.Checkbutton(self.id_based_options_frame, text="└ KR 불일치 시 다국어 제거", variable=self.kr_mismatch_delete_var)
+        self.id_mismatch_delete_cb.pack(side="left", padx=5)
+        self.id_overwrite_cb = ttk.Checkbutton(self.id_based_options_frame, text="└ 선택 언어 덮어쓰기 (KR 일치 시)", variable=self.kr_overwrite_var)
+        self.id_overwrite_cb.pack(side="left", padx=5)
+        
+        # --- KR 기반 적용 옵션 ---
+        self.kr_based_options_frame = ttk.Frame(options_frame)
+        # pack()은 toggle_options_by_mode에서 호출
+        self.kr_overwrite_on_kr_mode_var = tk.BooleanVar(value=False)
+        kr_opt1 = ttk.Checkbutton(self.kr_based_options_frame, text="선택 언어 덮어쓰기", variable=self.kr_overwrite_on_kr_mode_var)
+        kr_opt1.pack(side="left", padx=5)
+        
+        # --- 공통 옵션 ---
+        common_options_frame = ttk.Frame(options_frame)
+        common_options_frame.pack(fill="x", pady=5)
+
+        lang_frame = ttk.Frame(common_options_frame)
         lang_frame.pack(fill="x", padx=5, pady=2, anchor="w")
         ttk.Label(lang_frame, text="적용 언어:").pack(side="left", padx=5)
         for i, lang in enumerate(self.available_languages):
@@ -116,33 +153,24 @@ class TranslationApplyTool(tk.Frame):
             self.apply_lang_vars[lang] = var
             ttk.Checkbutton(lang_frame, text=lang, variable=var).pack(side="left", padx=5)
 
-        kr_check_frame = ttk.Frame(options_frame)
-        kr_check_frame.pack(fill="x", padx=5, pady=2, anchor="w")
-        ttk.Checkbutton(kr_check_frame, text="KR 일치 검사 (불일치 시 건너뛰기)", variable=self.kr_match_check_var, command=self.toggle_kr_options).pack(side="left", padx=5)
-        self.kr_mismatch_cb = ttk.Checkbutton(kr_check_frame, text="└ KR 불일치 시 다국어 제거", variable=self.kr_mismatch_delete_var)
-        self.kr_mismatch_cb.pack(side="left", padx=5)
-
-        conditional_frame = ttk.LabelFrame(options_frame, text="조건부 적용") # LabelFrame으로 변경하여 그룹화
+        conditional_frame = ttk.LabelFrame(common_options_frame, text="조건부 적용")
         conditional_frame.pack(fill="x", padx=5, pady=2)
         
         cond_inner_frame = ttk.Frame(conditional_frame)
         cond_inner_frame.pack(pady=2, padx=5)
-
         ttk.Label(cond_inner_frame, text="#번역요청 컬럼 값이 다음과 같을 때만 적용:").pack(side="left", anchor="w")
         ttk.Checkbutton(cond_inner_frame, text="신규", variable=self.apply_on_new_var).pack(side="left", padx=(10, 5))
         ttk.Checkbutton(cond_inner_frame, text="change", variable=self.apply_on_change_var).pack(side="left", padx=5)
         ttk.Checkbutton(cond_inner_frame, text="전달", variable=self.apply_on_transferred_var).pack(side="left", padx=5)
         
-        other_frame = ttk.Frame(options_frame)
+        other_frame = ttk.Frame(common_options_frame)
         other_frame.pack(fill="x", padx=5, pady=2, anchor="w")
         ttk.Checkbutton(other_frame, text="번역 적용 표시", variable=self.record_date_var).pack(side="left", padx=5)
         
-        # <<< [수정] 버튼 레이아웃 및 새 버튼 추가 >>>
         action_frame = ttk.Frame(self)
         action_frame.pack(fill="x", padx=5, pady=5)
         
         ttk.Button(action_frame, text="번역 적용", command=self.apply_translation).pack(side="right", padx=5, pady=5)
-        # '로드된 데이터 보기' 버튼 추가, 초기 상태는 비활성화
         self.view_data_button = ttk.Button(action_frame, text="로드된 데이터 보기", command=self.show_loaded_data_viewer, state="disabled")
         self.view_data_button.pack(side="right", padx=5, pady=5)
         ttk.Button(action_frame, text="번역 데이터 로드", command=self.load_translation_data).pack(side="right", padx=5, pady=5)
@@ -160,16 +188,38 @@ class TranslationApplyTool(tk.Frame):
         self.status_label_apply = ttk.Label(status_frame, text="대기 중...")
         self.status_label_apply.pack(side="left", padx=5)
         
+        self.toggle_options_by_mode()
+        self.toggle_kr_options()
+
+    def toggle_options_by_mode(self, *args):
+        """적용 기준(ID/KR)에 따라 옵션 프레임을 교체하여 보여줍니다."""
+        mode = self.apply_mode_var.get()
+        if mode == "id":
+            self.kr_based_options_frame.pack_forget()
+            self.id_based_options_frame.pack(fill="x", padx=15, pady=5)
+        elif mode == "kr":
+            self.id_based_options_frame.pack_forget()
+            self.kr_based_options_frame.pack(fill="x", padx=15, pady=5)
         self.toggle_kr_options()
 
     def toggle_kr_options(self):
         """KR 일치 검사 체크박스 상태에 따라 하위 옵션 활성화/비활성화"""
-        if self.kr_match_check_var.get():
-            self.kr_mismatch_cb.config(state="normal")
+        mode = self.apply_mode_var.get()
+        if mode == "id":
+            is_kr_check_enabled = self.kr_match_check_var.get()
+            state = "normal" if is_kr_check_enabled else "disabled"
+            
+            # 오류가 발생한 self.kr_mismatch_cb를 올바른 변수명인 self.id_mismatch_delete_cb로 수정
+            self.id_mismatch_delete_cb.config(state=state)
+            self.id_overwrite_cb.config(state=state)
+            
+            if not is_kr_check_enabled:
+                self.kr_mismatch_delete_var.set(False)
+                self.kr_overwrite_var.set(False)
         else:
-            # KR 검사를 안하면, 불일치 시 제거 옵션은 비활성화
-            self.kr_mismatch_cb.config(state="disabled")
-            self.kr_mismatch_delete_var.set(False)
+            # KR 기반 모드에서는 KR 일치 검사 관련 옵션 비활성화
+            self.id_mismatch_delete_cb.config(state="disabled")
+            self.id_overwrite_cb.config(state="disabled")
                     
 # 수정 후
     def select_excel_source_file(self):
@@ -415,7 +465,6 @@ class TranslationApplyTool(tk.Frame):
             parent=self
         )
 
-# tools/translation_apply_tool.py의 apply_translation 함수를 아래 코드로 교체합니다.
 
     def apply_translation(self):
         if not hasattr(self.translation_apply_manager, 'translation_cache') or not self.translation_apply_manager.translation_cache:
@@ -439,41 +488,60 @@ class TranslationApplyTool(tk.Frame):
             return
 
         self.log_text.delete(1.0, tk.END)
-        self.log_text.insert(tk.END, "번역 적용 작업 시작...\n")
-        self.status_label_apply.config(text="작업 중...")
-        self.update()
-            
-        loading_popup = LoadingPopup(self, "번역 적용 중", "번역 적용 준비 중...")
         
-        # [수정] 모든 옵션을 하나의 딕셔너리로 묶습니다.
+        # 작업 시작 로그
         allowed_statuses = []
         if self.apply_on_new_var.get(): allowed_statuses.append('신규')
         if self.apply_on_change_var.get(): allowed_statuses.append('change')
         if self.apply_on_transferred_var.get(): allowed_statuses.append('전달')
+        
+        # 옵션 요약 출력
+        mode_text = "ID 기반" if self.apply_mode_var.get() == "id" else "KR 기반"
+        lang_text = ", ".join(selected_langs)
+        condition_text = ", ".join(allowed_statuses) if allowed_statuses else "모든 항목"
+        
+        self.log_text.insert(tk.END, "="*60 + "\n")
+        self.log_text.insert(tk.END, "🚀 번역 적용 작업 시작\n")
+        self.log_text.insert(tk.END, f"📋 적용 모드: {mode_text}\n")
+        self.log_text.insert(tk.END, f"🌍 적용 언어: {lang_text}\n")
+        self.log_text.insert(tk.END, f"🎯 적용 조건: {condition_text}\n")
+        self.log_text.insert(tk.END, f"📁 대상 파일: {len(files_to_process)}개\n")
+        self.log_text.insert(tk.END, "="*60 + "\n\n")
+        
+        self.status_label_apply.config(text="작업 중...")
+        self.update()
+            
+        loading_popup = LoadingPopup(self, "번역 적용 중", "번역 적용 준비 중...")
             
         apply_options = {
+            "mode": self.apply_mode_var.get(),
             "selected_langs": selected_langs,
             "record_date": self.record_date_var.get(),
             "kr_match_check": self.kr_match_check_var.get(),
             "kr_mismatch_delete": self.kr_mismatch_delete_var.get(),
-            "apply_smart_lookup": self.apply_smart_lookup_var.get(),
+            "kr_overwrite": self.kr_overwrite_var.get(),
+            "kr_overwrite_on_kr_mode": self.kr_overwrite_on_kr_mode_var.get(),
             "allowed_statuses": allowed_statuses,
         }
             
         def apply_translations_thread():
             total_results = {
-                "total_updated": 0, "total_kr_mismatch_skipped": 0, "total_kr_mismatch_deleted": 0,
-                "total_smart_applied": 0, "total_conditional_skipped": 0,
+                "total_updated": 0, "total_overwritten": 0, "total_kr_mismatch_skipped": 0, 
+                "total_kr_mismatch_deleted": 0, "total_smart_applied": 0, 
+                "total_conditional_skipped": 0,
             }
             processed_count = 0
             error_count = 0
+            successful_files = []
+            failed_files = []
+            
+            start_time = time.time()
             
             for idx, (file_name, file_path) in enumerate(files_to_process):
                 self.after(0, lambda i=idx, n=file_name: [
                     loading_popup.update_progress((i / len(files_to_process)) * 100, f"파일 처리 중 ({i+1}/{len(files_to_process)}): {n}"),
                 ])
                 
-                # [수정] manager 함수를 호출할 때 옵션 딕셔너리 하나만 전달합니다.
                 result = self.translation_apply_manager.apply_translation(
                     file_path,
                     apply_options
@@ -481,72 +549,87 @@ class TranslationApplyTool(tk.Frame):
                 
                 if result["status"] == "success":
                     processed_count += 1
+                    successful_files.append(file_name)
                     for key in total_results:
                         total_results[key] += result.get(key, 0)
                 else:
                     error_count += 1
+                    failed_files.append((file_name, result.get("message", "알 수 없는 오류")))
+            
+            elapsed_time = time.time() - start_time
             
             self.after(0, lambda: self.process_translation_apply_result(
-                total_results["total_updated"], processed_count, error_count, loading_popup, {})
+                total_results, processed_count, error_count, loading_popup, 
+                successful_files, failed_files, elapsed_time)
             )
 
         thread = threading.Thread(target=apply_translations_thread, daemon=True)
         thread.start()
 
-
-    def process_translation_apply_result(self, total_updated, processed_count, error_count, loading_popup, problem_files):
+    def process_translation_apply_result(self, total_results, processed_count, error_count, loading_popup, successful_files, failed_files, elapsed_time):
         """번역 적용 스레드 완료 후 결과를 처리하고 UI에 표시합니다."""
         loading_popup.close()
 
-        # 로그 영역에 최종 요약 정보 출력
-        self.log_text.insert(tk.END, "\n" + "="*40 + "\n")
-        self.log_text.insert(tk.END, "번역 적용 작업 최종 완료\n")
-        self.log_text.insert(tk.END, f"  - 성공: {processed_count}개 파일\n")
-        self.log_text.insert(tk.END, f"  - 실패: {error_count}개 파일\n")
-        self.log_text.insert(tk.END, f"  - 총 업데이트된 항목 수: {total_updated}개\n")
-        self.log_text.insert(tk.END, "="*40 + "\n")
+        # 시간 포맷팅
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
+        time_str = f"{minutes}분 {seconds}초" if minutes > 0 else f"{seconds}초"
+
+        # 최종 요약 로그
+        self.log_text.insert(tk.END, "\n" + "="*60 + "\n")
+        self.log_text.insert(tk.END, "🎉 번역 적용 작업 완료\n")
+        self.log_text.insert(tk.END, "="*60 + "\n")
+        
+        # 성공/실패 요약
+        self.log_text.insert(tk.END, f"⏱️  소요 시간: {time_str}\n")
+        self.log_text.insert(tk.END, f"✅ 성공: {processed_count}개 파일\n")
+        if error_count > 0:
+            self.log_text.insert(tk.END, f"❌ 실패: {error_count}개 파일\n")
+        
+        # 작업 통계
+        total_applied = total_results["total_updated"] + total_results["total_overwritten"]
+        self.log_text.insert(tk.END, f"\n📊 작업 통계:\n")
+        self.log_text.insert(tk.END, f"   • 신규 적용: {total_results['total_updated']:,}개\n")
+        if total_results["total_overwritten"] > 0:
+            self.log_text.insert(tk.END, f"   • 덮어쓰기: {total_results['total_overwritten']:,}개\n")
+        if total_results["total_conditional_skipped"] > 0:
+            self.log_text.insert(tk.END, f"   • 조건 불일치로 건너뜀: {total_results['total_conditional_skipped']:,}개\n")
+        if total_results["total_kr_mismatch_skipped"] > 0:
+            self.log_text.insert(tk.END, f"   • KR 불일치로 건너뜀: {total_results['total_kr_mismatch_skipped']:,}개\n")
+        if total_results["total_kr_mismatch_deleted"] > 0:
+            self.log_text.insert(tk.END, f"   • KR 불일치로 삭제: {total_results['total_kr_mismatch_deleted']:,}개\n")
+        
+        self.log_text.insert(tk.END, f"\n🎯 총 적용된 번역: {total_applied:,}개\n")
+        
+        # 실패한 파일 상세 정보
+        if failed_files:
+            self.log_text.insert(tk.END, f"\n❌ 실패한 파일:\n")
+            for file_name, error_msg in failed_files[:5]:  # 최대 5개까지만 표시
+                self.log_text.insert(tk.END, f"   • {file_name}: {error_msg}\n")
+            if len(failed_files) > 5:
+                self.log_text.insert(tk.END, f"   ... 외 {len(failed_files) - 5}개\n")
+        
+        self.log_text.insert(tk.END, "="*60 + "\n")
         self.log_text.see(tk.END)
         
-        self.status_label_apply.config(text=f"번역 적용 완료 - {total_updated}개 항목 업데이트")
+        self.status_label_apply.config(text=f"번역 적용 완료 - {total_applied:,}개 항목 적용")
         
-        # 처리 실패 파일 요약
-        problem_summary_list = []
-        total_problem_files = sum(len(files) for files in problem_files.values())
-        
-        if total_problem_files > 0:
-            self.log_text.insert(tk.END, f"\n처리 실패 파일 상세 ({total_problem_files}개):\n")
-            for error_type, files in problem_files.items():
-                if files:
-                    # 오류 유형을 보기 좋게 변환 (예: 'permission_denied' -> 'Permission Denied')
-                    error_title = error_type.replace('_', ' ').title()
-                    problem_summary_list.append(f"▶ {error_title} ({len(files)}개):")
-                    self.log_text.insert(tk.END, f"▶ {error_title} ({len(files)}개):\n")
-                    for f in files[:5]: # 최대 5개까지만 예시로 표시
-                        file_name = f.get("file_name", "N/A")
-                        message = f.get("message", "N/A")
-                        log_entry = f"   - {file_name}: {message}\n"
-                        problem_summary_list.append(f"   - {file_name}")
-                        self.log_text.insert(tk.END, log_entry)
-                    if len(files) > 5:
-                        problem_summary_list.append("   ...")
-                        self.log_text.insert(tk.END, "   ...\n")
-
-
-        # 최종 완료 메시지 박스 생성
-        completion_msg = f"번역 적용 작업이 완료되었습니다.\n\n"
-        completion_msg += f"✅ 처리 성공: {processed_count}개 파일\n"
+        # 완료 메시지 박스
+        completion_msg = f"번역 적용이 완료되었습니다!\n\n"
+        completion_msg += f"⏱️ 소요 시간: {time_str}\n"
+        completion_msg += f"✅ 성공: {processed_count}개 파일\n"
         if error_count > 0:
-            completion_msg += f"❌ 처리 실패: {error_count}개 파일\n"
-        completion_msg += f"🔄 총 업데이트된 항목 수: {total_updated}개\n"
+            completion_msg += f"❌ 실패: {error_count}개 파일\n"
+        completion_msg += f"\n🎯 총 적용된 번역: {total_applied:,}개"
         
-        if total_problem_files > 0:
-            problem_detail = "\n\n" + "\n".join(problem_summary_list)
-            # 메시지 박스에 표시할 내용 길이 제한
-            if len(problem_detail) > 1000:
-                problem_detail = problem_detail[:1000] + "\n..."
-            completion_msg += problem_detail
+        if total_results["total_updated"] > 0:
+            completion_msg += f"\n   • 신규 적용: {total_results['total_updated']:,}개"
+        if total_results["total_overwritten"] > 0:
+            completion_msg += f"\n   • 덮어쓰기: {total_results['total_overwritten']:,}개"
         
         messagebox.showinfo("완료", completion_msg, parent=self)
+
+
 
 
     def _check_files_are_open(self, file_paths_to_check):

@@ -21,6 +21,8 @@ class TranslationDBTool(tk.Frame):
         super().__init__(parent)
         self.parent = parent
         self.db_manager = TranslationDBManager(self)
+        self.update_option = tk.StringVar(value="default") # 기본값 설정
+        self.debug_string_id_var = tk.StringVar() # 디버깅 ID 입력 변수
         
         # UI에서 사용할 변수들
         self.trans_excel_folder_var = tk.StringVar()
@@ -92,22 +94,26 @@ class TranslationDBTool(tk.Frame):
             ttk.Checkbutton(languages_frame, text=lang, variable=var).grid(
                 row=i // 3, column=i % 3, padx=20, pady=5, sticky="w")
         
-        perf_frame = ttk.LabelFrame(self, text="성능 설정")
-        perf_frame.pack(fill="x", padx=5, pady=5)
+        # --- 수정된 부분 시작 ---
+        # 업데이트 옵션 프레임을 action_frame 위, log_frame 아래에 위치하도록 pack 옵션 수정
+        update_options_frame = ttk.LabelFrame(self, text="DB 업데이트 옵션")
+        update_options_frame.pack(fill="x", padx=5, pady=5)
+
+        # 각 옵션에 대한 라디오 버튼 생성
+        ttk.Radiobutton(update_options_frame, text="기본 업데이트 (STRING_ID 기준, KR 제외)", variable=self.update_option, value="default").pack(anchor="w", padx=5)
+        ttk.Radiobutton(update_options_frame, text="KR 추가 비교 (STRING_ID + KR 기준)", variable=self.update_option, value="kr_additional_compare").pack(anchor="w", padx=5)
+        ttk.Radiobutton(update_options_frame, text="KR 비교 (KR 기준)", variable=self.update_option, value="kr_compare").pack(anchor="w", padx=5)
+        ttk.Radiobutton(update_options_frame, text="KR 덮어쓰기 (STRING_ID 기준, KR 포함)", variable=self.update_option, value="kr_overwrite").pack(anchor="w", padx=5)
         
-        ttk.Label(perf_frame, text="배치 크기:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        ttk.Spinbox(perf_frame, from_=100, to=2000, increment=100, 
-                   textvariable=self.batch_size_var, width=5).grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        ttk.Button(update_options_frame, text="번역 DB 구축", command=self.build_translation_db).pack(side="right", padx=5, pady=5)
+        ttk.Button(update_options_frame, text="번역 DB 업데이트", command=self.update_translation_db).pack(side="right", padx=5, pady=5)
         
-        ttk.Checkbutton(perf_frame, text="읽기 전용 모드 사용 (빠름)", 
-                       variable=self.read_only_var).grid(row=0, column=2, padx=20, pady=5, sticky="w")
-        
-        action_frame = ttk.Frame(self)
-        action_frame.pack(fill="x", padx=5, pady=5)
-        
-        ttk.Button(action_frame, text="번역 DB 구축", command=self.build_translation_db).pack(side="right", padx=5, pady=5)
-        ttk.Button(action_frame, text="번역 DB 업데이트", command=self.update_translation_db).pack(side="right", padx=5, pady=5)
-        
+        debug_frame = ttk.LabelFrame(self, text="디버깅")
+        debug_frame.pack(fill="x", padx=5, pady=5, side="bottom")
+
+        ttk.Label(debug_frame, text="특정 STRING_ID 추적:").pack(side="left", padx=5)
+        ttk.Entry(debug_frame, textvariable=self.debug_string_id_var, width=40).pack(side="left", padx=5, fill="x", expand=True)
+
         log_frame = ttk.LabelFrame(self, text="작업 로그")
         log_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
@@ -126,6 +132,16 @@ class TranslationDBTool(tk.Frame):
         
         self.progress_bar_db = ttk.Progressbar(status_frame, length=400, mode="determinate")
         self.progress_bar_db.pack(side="right", fill="x", expand=True, padx=5)
+        
+        perf_frame = ttk.LabelFrame(self, text="성능 설정")
+        perf_frame.pack(fill="x", padx=5, pady=5, side="bottom")
+        
+        ttk.Label(perf_frame, text="배치 크기:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ttk.Spinbox(perf_frame, from_=100, to=2000, increment=100, 
+                   textvariable=self.batch_size_var, width=5).grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        
+        ttk.Checkbutton(perf_frame, text="읽기 전용 모드 사용 (빠름)", 
+                       variable=self.read_only_var).grid(row=0, column=2, padx=20, pady=5, sticky="w")
     
     def select_trans_excel_folder(self):
         folder = filedialog.askdirectory(title="번역 엑셀 폴더 선택", parent=self)
@@ -302,8 +318,17 @@ class TranslationDBTool(tk.Frame):
         
         def update_db():
             try:
+                selected_option = self.update_option.get() # 선택된 옵션 가져오기
+                debug_id = self.debug_string_id_var.get()
                 result = self.db_manager.update_translation_db(
-                    excel_files, db_path, selected_langs, batch_size, use_read_only, progress_callback
+                    excel_files=excel_files, 
+                    db_path=db_path, 
+                    language_list=selected_langs, 
+                    batch_size=batch_size, 
+                    use_read_only=use_read_only, 
+                    progress_callback=progress_callback, 
+                    update_option=selected_option,
+                    debug_string_id=debug_id if debug_id else None  # 이 줄이 누락되었을 수 있음
                 )
                 self.after(0, lambda: self.process_db_update_result(result, loading_popup, start_time))
             except Exception as e:

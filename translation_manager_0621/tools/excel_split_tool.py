@@ -109,8 +109,23 @@ class ExcelSplitTool(tk.Frame):
             pythoncom.CoInitialize()
             
             excel = win32com.client.Dispatch("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
+            
+            try:
+                # 엑셀을 완전히 숨기고 모든 화면 업데이트 중지
+                excel.Visible = False  # 엑셀 화면 숨김
+                excel.DisplayAlerts = False  # 경고 메시지 숨김
+                excel.ScreenUpdating = False  # 화면 업데이트 중지
+                excel.EnableEvents = False  # 이벤트 비활성화
+                excel.Interactive = False  # 사용자 상호작용 비활성화
+                
+                # Calculation 속성은 설정할 수 없는 경우가 있으므로 안전하게 처리
+                try:
+                    excel.Calculation = -4135  # xlCalculationManual
+                except:
+                    self.excel_log("계산 모드 설정을 건너뜁니다.")
+                    
+            except Exception as setup_error:
+                self.excel_log(f"엑셀 설정 중 일부 오류 (계속 진행): {str(setup_error)}")
             
             try:
                 self.excel_log("엑셀 파일 열기 중...")
@@ -132,10 +147,19 @@ class ExcelSplitTool(tk.Frame):
                         
                         new_file_path = os.path.join(output_dir, f"{safe_sheet_name}.xlsx")
                         
-                        sheet.Copy(Before=None)
+                        # 새 워크북 생성 (화면에 표시되지 않도록)
+                        new_workbook = excel.Workbooks.Add()
                         
-                        new_workbook = excel.ActiveWorkbook
+                        # 시트 복사
+                        sheet.Copy(Before=new_workbook.Sheets(1))
                         
+                        # 기본 시트 삭제 (새로 추가된 시트만 남김)
+                        if new_workbook.Sheets.Count > 1:
+                            for i in range(new_workbook.Sheets.Count, 1, -1):
+                                if new_workbook.Sheets(i).Name != sheet_name:
+                                    new_workbook.Sheets(i).Delete()
+                        
+                        # 파일 저장
                         new_workbook.SaveAs(os.path.abspath(new_file_path))
                         new_workbook.Close(SaveChanges=False)
                         
@@ -149,6 +173,18 @@ class ExcelSplitTool(tk.Frame):
                 self.excel_log("모든 시트가 처리되었습니다.")
                 
             finally:
+                # 엑셀 설정 복원 (안전하게 처리)
+                try:
+                    excel.ScreenUpdating = True
+                    excel.EnableEvents = True
+                    excel.Interactive = True
+                    try:
+                        excel.Calculation = -4105  # xlCalculationAutomatic
+                    except:
+                        pass  # 계산 모드 복원 실패 시 무시
+                except:
+                    pass  # 설정 복원 실패 시 무시
+                
                 workbook.Close(SaveChanges=False)
                 excel.Quit()
                 

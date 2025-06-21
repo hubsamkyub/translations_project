@@ -25,6 +25,7 @@ from tools.string_sync_manager import StringSyncManager
 from tools.excel_split_tool import ExcelSplitTool
 from tools.word_replacement_tool import WordReplacementTool
 from tools.translation_request_extractor import TranslationRequestExtractor
+from tools.translation_workflow_tool import TranslationWorkflowTool
 
 
 class TranslationAutomationTool(tk.Frame):
@@ -47,6 +48,7 @@ class TranslationAutomationTool(tk.Frame):
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
         
+        self.workflow_frame = ttk.Frame(self.notebook)
         self.db_compare_frame = ttk.Frame(self.notebook)
         self.translation_db_frame = ttk.Frame(self.notebook)
         self.translation_apply_frame = ttk.Frame(self.notebook)        
@@ -55,10 +57,11 @@ class TranslationAutomationTool(tk.Frame):
         self.excel_split_frame = ttk.Frame(self.notebook)
         self.word_replacement_frame = ttk.Frame(self.notebook)
     
-        self.notebook.add(self.db_compare_frame, text="DB 비교 추출")
+        self.notebook.add(self.workflow_frame, text="통합 번역 워크플로우")                
+        self.notebook.add(self.translation_request_frame, text="번역 요청 추출")
         self.notebook.add(self.translation_db_frame, text="번역 DB 구축")
         self.notebook.add(self.translation_apply_frame, text="번역 적용")
-        self.notebook.add(self.translation_request_frame, text="번역 요청 추출")
+        self.notebook.add(self.db_compare_frame, text="DB 비교 추출")
         self.notebook.add(self.string_sync_frame, text="STRING 동기화")
         self.notebook.add(self.excel_split_frame, text="엑셀 시트 분리")
         self.notebook.add(self.word_replacement_frame, text="단어 치환")
@@ -80,6 +83,10 @@ class TranslationAutomationTool(tk.Frame):
         """
         각 탭 프레임에 해당하는 도구 모듈을 로드하고 배치합니다.
         """
+        # [추가] 워크플로우 탭 설정
+        workflow_tool = TranslationWorkflowTool(self.workflow_frame, self.root)
+        workflow_tool.pack(fill="both", expand=True)
+        
         # DB 비교 추출 탭
         db_compare_tool = DBCompareTool(self.db_compare_frame)
         db_compare_tool.pack(fill="both", expand=True)

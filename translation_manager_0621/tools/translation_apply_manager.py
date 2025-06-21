@@ -27,7 +27,6 @@ class TranslationApplyManager:
         else:
             print(message)
 
-# tools/translation_apply_manager.py의 load_translation_cache_from_excel 함수를 아래 코드로 교체
 
     def load_translation_cache_from_excel(self, file_path, sheet_names):
         """[수정] openpyxl로 여러 시트에서 번역 데이터를 읽어 캐시를 생성합니다."""
@@ -401,138 +400,253 @@ class TranslationApplyManager:
         return None
 
 
-# tools/translation_apply_manager.py 의 apply_translation 함수를 아래 코드로 교체
-# apply_translation 함수 전체를 아래의 최종 코드로 교체합니다.
-
     def apply_translation(self, file_path, options):
-        """[수정] 정교한 캐시 조회 로직을 적용하여 업데이트 문제를 해결합니다."""
-        # 옵션 추출
+        """
+        [수정] ID 또는 KR 기반으로 번역을 적용하고, 상세한 로그를 제공합니다.
+        """
+        # --- 옵션 추출 ---
+        mode = options.get("mode", "id")
         selected_langs = options.get("selected_langs", [])
         record_date = options.get("record_date", True)
+        # ID 모드 옵션
         kr_match_check = options.get("kr_match_check", True)
         kr_mismatch_delete = options.get("kr_mismatch_delete", False)
-        apply_smart_lookup = options.get("apply_smart_lookup", False)
+        kr_overwrite = options.get("kr_overwrite", False)
+        # KR 모드 옵션
+        kr_overwrite_on_kr_mode = options.get("kr_overwrite_on_kr_mode", False)
+        
         allowed_statuses = options.get("allowed_statuses", [])
+        allowed_statuses_lower = [status.lower() for status in allowed_statuses] if allowed_statuses else []
 
+        # --- 캐시 확인 ---
         if not self.translation_cache:
             return {"status": "error", "message": "번역 캐시가 로드되지 않았습니다."}
-
-        # [추가] 캐시 로드 확인 로그
-        self.log_message(f"INFO: 로드된 번역 캐시 항목 수: {len(self.translation_cache)}개")
+        if mode == 'kr' and not self.kr_reverse_cache:
+            return {"status": "error", "message": "KR 기반 적용을 위한 역방향 캐시가 없습니다."}
 
         file_name = os.path.basename(file_path)
-        self.log_message(f"📁 [안전 모드] 파일 처리 시작: {file_name}")
         
-        app = None
+        # 옵션 요약 로그
+        option_summary = []
+        option_summary.append(f"{mode.upper()} 기반")
+        if mode == 'id' and kr_match_check:
+            option_summary.append("KR일치검사")
+            if kr_mismatch_delete:
+                option_summary.append("불일치시삭제")
+            if kr_overwrite:
+                option_summary.append("덮어쓰기")
+        elif mode == 'kr' and kr_overwrite_on_kr_mode:
+            option_summary.append("덮어쓰기")
+        
+        if allowed_statuses:
+            option_summary.append(f"조건:{','.join(allowed_statuses)}")
+        
+        self.log_message(f"📁 {file_name} 처리시작 [{' | '.join(option_summary)}]")
+        
+        workbook = None
         try:
-            app = xw.App(visible=False)
-            pid = app.pid
-            workbook = app.books.open(file_path)
-
-            string_sheets = [sheet for sheet in workbook.sheets if sheet.name.lower().startswith("string") and not sheet.name.startswith("#")]
-            
-            file_modified = False
-            results = { "total_updated": 0, "total_kr_mismatch_skipped": 0, "total_kr_mismatch_deleted": 0,
-                        "total_smart_applied": 0, "total_conditional_skipped": 0 }
-            allowed_statuses_lower = [status.lower() for status in allowed_statuses] if allowed_statuses else []
-            
             current_file_name_lower = os.path.basename(file_path).lower()
+            workbook = load_workbook(file_path)
 
-            for sheet in string_sheets:
-                self.log_message(f"  - 시트 처리 중: {sheet.name}")
-                
-                header_row_num = -1
-                header_map = {}
-                for r in range(1, 11):
-                    row_values = sheet.range(f'A{r}').expand('right').value
-                    if isinstance(row_values, str): row_values = [row_values]
-                    if row_values and "STRING_ID" in row_values:
-                        header_row_num = r
-                        header_map = {val: i for i, val in enumerate(row_values) if val}
-                        break
-                
-                if "STRING_ID" not in header_map: continue
+            string_sheets = [sheet for sheet in workbook.sheetnames if sheet.lower().startswith("string") and not sheet.startswith("#")]
+            
+            if not string_sheets:
+                self.log_message(f"   ⚠️ String 시트 없음")
+                return {"status": "info", "message": "파일에 String 시트가 없습니다"}
 
-                used_range = sheet.used_range
-                if used_range.last_cell.row <= header_row_num: continue
-                
-                data_range = sheet.range(f'A{header_row_num+1}', used_range.last_cell)
-                sheet_data = data_range.value
-                if not isinstance(sheet_data, list): sheet_data = [sheet_data]
-                
-                sheet_modified = False
+            file_modified = False
+            results = {
+                "total_updated": 0, "total_overwritten": 0, "total_kr_mismatch_skipped": 0,
+                "total_kr_mismatch_deleted": 0, "total_conditional_skipped": 0
+            }
+            
+            # 시트별 상세 결과 저장
+            sheet_details = {}
+            
+            fill_green = PatternFill(start_color="DAF2D0", end_color="DAF2D0", fill_type="solid")
+            fill_orange = PatternFill(start_color="FFDDC1", end_color="FFDDC1", fill_type="solid") # '덮어씀' 표시용
 
-                string_id_idx = header_map.get("STRING_ID")
-                req_col_idx = header_map.get("#번역요청")
-                kr_col_idx = header_map.get("KR")
-
-                for r_idx, row_data in enumerate(sheet_data):
-                    if not row_data: continue
-                    if string_id_idx is None or len(row_data) <= string_id_idx: continue
+            for sheet_name in string_sheets:
+                worksheet = workbook[sheet_name]
+                string_id_col, header_row = self.find_string_id_position(worksheet)
+                if not string_id_col or not header_row:
+                    self.log_message(f"   ⚠️ {sheet_name}: STRING_ID 컬럼 없음")
+                    continue
+                
+                lang_cols = self.find_language_columns(worksheet, header_row, selected_langs + ['KR'])
+                request_col_idx = self.find_target_columns(worksheet, header_row, ["#번역요청"]).get("#번역요청")
+                
+                # 시트별 카운터
+                sheet_stats = {
+                    "updated": 0, "overwritten": 0, "conditional_skipped": 0,
+                    "kr_mismatch_skipped": 0, "kr_mismatch_deleted": 0,
+                    "total_rows": 0, "processed_rows": 0
+                }
+                
+                # 언어별 적용 카운터
+                lang_apply_count = {lang: 0 for lang in selected_langs if lang != 'KR'}
+                
+                # 전체 행 수 계산
+                sheet_stats["total_rows"] = worksheet.max_row - header_row
+                
+                for row_idx in range(header_row + 1, worksheet.max_row + 1):
+                    sheet_stats["processed_rows"] += 1
                     
-                    string_id = str(row_data[string_id_idx] or '').strip()
-                    if not string_id: continue
-
-                    # --- [수정] 정교한 캐시 조회 로직 ---
+                    # 조건부 적용 로직
+                    if allowed_statuses_lower and request_col_idx:
+                        request_val = str(worksheet.cell(row=row_idx, column=request_col_idx).value or '').strip().lower()
+                        if request_val not in allowed_statuses_lower:
+                            sheet_stats["conditional_skipped"] += 1
+                            continue
+                    
+                    # --- 데이터 조회 로직 (ID vs KR) ---
                     trans_data = None
-                    sheet_name_lower = sheet.name.lower()
-                    # 1순위: 파일명+시트명 기반 캐시 (가장 정확)
-                    if current_file_name_lower in self.translation_file_cache and sheet_name_lower in self.translation_file_cache[current_file_name_lower]:
-                        trans_data = self.translation_file_cache[current_file_name_lower][sheet_name_lower].get(string_id)
-                    # 2순위: 시트명 기반 캐시
-                    if not trans_data and sheet_name_lower in self.translation_sheet_cache:
-                        trans_data = self.translation_sheet_cache[sheet_name_lower].get(string_id)
-                    # 3순위: 전역 STRING_ID 캐시
-                    if not trans_data:
-                        trans_data = self.translation_cache.get(string_id)
-                    # --- 캐시 조회 로직 끝 ---
+                    key_value = ''
+                    if mode == 'id':
+                        key_value = str(worksheet.cell(row=row_idx, column=string_id_col).value or '').strip()
+                        if key_value:
+                            trans_data = self.translation_cache.get(key_value)
+                    else: # mode == 'kr'
+                        if 'KR' in lang_cols:
+                            key_value = str(worksheet.cell(row=row_idx, column=lang_cols['KR']).value or '').strip()
+                            if key_value:
+                                trans_data = self.kr_reverse_cache.get(key_value)
 
-                    if not trans_data: continue
+                    if not key_value or not trans_data:
+                        continue
                     
-                    current_kr = str(row_data[kr_col_idx] or '') if kr_col_idx is not None and len(row_data) > kr_col_idx else ''
-                    is_kr_matched = (current_kr == str(trans_data.get('kr', '')))
-
-                    row_modified_flag = False
-                    if is_kr_matched:
-                        for lang, lang_idx in header_map.items():
-                            if lang in selected_langs and lang != 'KR' and lang_idx < len(row_data):
-                                cached_val = trans_data.get(lang.lower(), '')
-                                if cached_val and str(row_data[lang_idx] or '') != str(cached_val):
-                                    sheet_data[r_idx][lang_idx] = cached_val
-                                    row_modified_flag = True
-                    # (이하 스마트 적용, KR 불일치 시 삭제 로직은 동일하게 유지)
+                    row_modified_this_iteration = False
                     
-                    if row_modified_flag:
-                        sheet_modified = True
-                        results["total_updated"] += 1
-                        if record_date and req_col_idx is not None and len(row_data) > req_col_idx:
-                            sheet_data[r_idx][req_col_idx] = "적용"
+                    # --- 적용 로직 ---
+                    if mode == 'id' and kr_match_check:
+                        current_kr_val = str(worksheet.cell(row=row_idx, column=lang_cols['KR']).value or '').strip()
+                        cache_kr_val = str(trans_data.get('kr', '')).strip()
+                        if current_kr_val != cache_kr_val:
+                            if kr_mismatch_delete:
+                                deleted_count = 0
+                                for lang, col_idx in lang_cols.items():
+                                    if lang != 'KR' and worksheet.cell(row=row_idx, column=col_idx).value:
+                                        worksheet.cell(row=row_idx, column=col_idx).value = ""
+                                        deleted_count += 1
+                                        row_modified_this_iteration = True
+                                if deleted_count > 0:
+                                    sheet_stats["kr_mismatch_deleted"] += 1
+                            else:
+                                sheet_stats["kr_mismatch_skipped"] += 1
+                            continue # KR 불일치 시 건너뛰기
+                    
+                    # 번역 적용 또는 덮어쓰기 로직
+                    for lang in selected_langs:
+                        if lang == 'KR': continue
+                        
+                        lang_lower = lang.lower()
+                        col_idx = lang_cols.get(lang)
+                        if not col_idx: continue
+                        
+                        cell = worksheet.cell(row=row_idx, column=col_idx)
+                        current_val = str(cell.value or '').strip()
+                        cached_val = str(trans_data.get(lang_lower, '')).strip()
 
-                if sheet_modified:
-                    self.log_message(f"  - {sheet.name}: 변경사항({results['total_updated']}개)을 시트에 적용합니다.")
-                    data_range.value = sheet_data
-                    file_modified = True
+                        if cached_val and current_val != cached_val:
+                            should_overwrite = False
+                            if mode == 'id' and kr_match_check and kr_overwrite:
+                                should_overwrite = True # ID 모드, KR 일치, 덮어쓰기 옵션 켬
+                            elif mode == 'kr' and kr_overwrite_on_kr_mode:
+                                should_overwrite = True # KR 모드, 덮어쓰기 옵션 켬
+                            
+                            if should_overwrite:
+                                cell.value = cached_val
+                                cell.fill = fill_orange # 주황색으로 "덮어씀" 표시
+                                sheet_stats["overwritten"] += 1
+                                lang_apply_count[lang] += 1
+                                row_modified_this_iteration = True
+                            elif not should_overwrite and not current_val: # 빈 칸에만 적용
+                                cell.value = cached_val
+                                cell.fill = fill_green
+                                sheet_stats["updated"] += 1
+                                lang_apply_count[lang] += 1
+                                row_modified_this_iteration = True
+                    
+                    if row_modified_this_iteration:
+                        file_modified = True
+                        if record_date and request_col_idx:
+                            worksheet.cell(row=row_idx, column=request_col_idx).value = "적용"
+
+                # 시트 처리 결과 로그
+                if sheet_stats["updated"] > 0 or sheet_stats["overwritten"] > 0:
+                    lang_details = []
+                    for lang, count in lang_apply_count.items():
+                        if count > 0:
+                            lang_details.append(f"{lang}:{count}")
+                    
+                    log_parts = []
+                    if sheet_stats["updated"] > 0:
+                        log_parts.append(f"신규:{sheet_stats['updated']}")
+                    if sheet_stats["overwritten"] > 0:
+                        log_parts.append(f"덮어씀:{sheet_stats['overwritten']}")
+                    if lang_details:
+                        log_parts.append(f"[{', '.join(lang_details)}]")
+                    
+                    self.log_message(f"   ✅ {sheet_name}: {' | '.join(log_parts)}")
+                else:
+                    skip_reasons = []
+                    if sheet_stats["conditional_skipped"] > 0:
+                        skip_reasons.append(f"조건불일치:{sheet_stats['conditional_skipped']}")
+                    if sheet_stats["kr_mismatch_skipped"] > 0:
+                        skip_reasons.append(f"KR불일치:{sheet_stats['kr_mismatch_skipped']}")
+                    if sheet_stats["kr_mismatch_deleted"] > 0:
+                        skip_reasons.append(f"KR불일치삭제:{sheet_stats['kr_mismatch_deleted']}")
+                    
+                    if skip_reasons:
+                        self.log_message(f"   ⚠️ {sheet_name}: 적용없음 ({' | '.join(skip_reasons)})")
+                    else:
+                        self.log_message(f"   ⚠️ {sheet_name}: 적용없음 (번역데이터 없음)")
+                
+                # 전체 결과에 누적
+                for key in results:
+                    if key.startswith("total_"):
+                        stat_key = key[6:]  # "total_" 제거
+                        results[key] += sheet_stats.get(stat_key, 0)
+                
+                sheet_details[sheet_name] = sheet_stats
             
             if file_modified:
-                self.log_message(f"  💾 변경사항 저장 중...")
-                workbook.save()
+                self.log_message(f"   💾 변경사항 저장 중...")
+                workbook.save(file_path)
+                
+                # 최종 파일 요약
+                summary_parts = []
+                if results["total_updated"] > 0:
+                    summary_parts.append(f"신규 {results['total_updated']}개")
+                if results["total_overwritten"] > 0:
+                    summary_parts.append(f"덮어씀 {results['total_overwritten']}개")
+                
+                total_applied = results["total_updated"] + results["total_overwritten"]
+                self.log_message(f"   ✅ {file_name} 완료: {' | '.join(summary_parts)} (총 {total_applied}개 적용)")
+            else:
+                skip_summary = []
+                if results["total_conditional_skipped"] > 0:
+                    skip_summary.append(f"조건 {results['total_conditional_skipped']}개")
+                if results["total_kr_mismatch_skipped"] > 0:
+                    skip_summary.append(f"KR불일치 {results['total_kr_mismatch_skipped']}개")
+                
+                if skip_summary:
+                    self.log_message(f"   ⚠️ {file_name} 완료: 변경없음 ({' | '.join(skip_summary)} 건너뜀)")
+                else:
+                    self.log_message(f"   ⚠️ {file_name} 완료: 변경없음 (번역 데이터 없음)")
             
-            workbook.close()
             return {"status": "success", **results}
-
+            
         except Exception as e:
-            self.log_message(f"❌ 파일 처리 중 오류 발생: {file_name} - {str(e)}")
+            self.log_message(f"   ❌ {file_name} 오류: {str(e)}")
             import traceback
             traceback.print_exc()
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": str(e), "error_type": "processing_error"}
         finally:
-            if app and app.pid:
-                try:
-                    os.kill(app.pid, signal.SIGTERM)
-                    self.log_message(f"  ✔️ Excel 프로세스(PID: {app.pid})를 확실하게 종료했습니다.")
-                except OSError: pass
-                except Exception as kill_e: self.log_message(f"  ⚠️ Excel 프로세스 종료 중 오류 발생: {kill_e}")
+            if workbook:
+                workbook.close()
 
+               
     def check_external_links(self, workbook):
         """워크북에서 외부 링크 검사 (번역 도구용) - 검증된 최종 버전"""
         import re
