@@ -11,11 +11,12 @@ class BasicRequestExtractor(tk.Frame):
         super().__init__(parent)
         self.parent_app = parent_app
 
+        #체크박스 기본 설정
         self.extract_new_var = tk.BooleanVar(value=True)
-        self.extract_change_var = tk.BooleanVar(value=True)
-        self.mark_as_transferred_var = tk.BooleanVar(value=True)
-        # [추가] DB 저장 옵션 변수
-        self.save_to_db_var = tk.BooleanVar(value=True)
+        self.extract_change_var = tk.BooleanVar(value=False)
+        self.mark_as_transferred_var = tk.BooleanVar(value=False)
+        self.save_to_db_var = tk.BooleanVar(value=False)
+        self.full_results = []
 
         self.setup_ui()
         self._toggle_db_path_entry() # 초기 UI 상태 설정
@@ -116,15 +117,20 @@ class BasicRequestExtractor(tk.Frame):
         self.parent_app.extraction_thread.daemon = True
         self.parent_app.extraction_thread.start()
 
+    # tools/basic_request_extractor.py
     def _display_results_in_tree(self, results):
-        """추출 결과를 UI의 Treeview에 표시"""
+        """추출 결과를 UI의 Treeview에 표시하고, 전체 결과를 self.full_results에 저장"""
+        # ▼▼▼ [추가] 전체 결과를 클래스 변수에 저장 ▼▼▼
+        self.full_results = results
+
         self.result_tree.delete(*self.result_tree.get_children())
-        for row in results:
-            # (file_name, sheet_name, string_id, kr, en, cn, tw, th, request_type, additional_info)
+        for row in self.full_results: # results -> self.full_results
+            # (file_name, sheet_name, string_id, kr, cn, tw, request_type, additional_info)
             # 필요한 데이터만 선택하여 표시
-            display_row = (row[0], row[1], row[2], row[3], row[8])
+            display_row = (row[0], row[1], row[2], row[3], row[6])
             self.result_tree.insert("", "end", values=display_row)
 
+    # tools/basic_request_extractor.py
     def export_results(self):
         """추출 결과를 엑셀로 내보내기"""
         db_path = self.parent_app.output_db_var.get()
@@ -133,7 +139,8 @@ class BasicRequestExtractor(tk.Frame):
                 show_message(self, "warning", "경고", "먼저 추출 작업을 실행하여 DB 파일을 생성해야 합니다.")
                 return
         else:
-            if not self.result_tree.get_children():
+            # ▼▼▼ [수정] self.result_tree.get_children() 대신 self.full_results 사용 ▼▼▼
+            if not self.full_results:
                 show_message(self, "warning", "경고", "먼저 추출 작업을 실행하여 결과를 확인해야 합니다.")
                 return
 
@@ -143,14 +150,12 @@ class BasicRequestExtractor(tk.Frame):
         if self.save_to_db_var.get():
             self.parent_app.extraction_manager.export_to_excel(db_path, save_path)
         else:
-            # Treeview의 데이터를 엑셀로 저장
-            items = []
-            for child in self.result_tree.get_children():
-                items.append(self.result_tree.item(child)['values'])
-            
-            if items:
+            # Treeview가 아닌, 전체 데이터가 담긴 self.full_results를 사용
+            if self.full_results:
                 import pandas as pd
-                df = pd.DataFrame(items, columns=["file_name", "sheet_name", "string_id", "kr", "request_type"])
+                # ▼▼▼ [수정] 전체 컬럼 이름 목록으로 DataFrame 생성 ▼▼▼
+                columns = ["file_name", "sheet_name", "string_id", "kr", "cn", "tw", "request_type", "additional_info"]
+                df = pd.DataFrame(self.full_results, columns=columns)
                 df.to_excel(save_path, index=False)
                 show_message(self, "info", "완료", f"데이터를 엑셀로 내보냈습니다.\n파일: {save_path}")
             else:

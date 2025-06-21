@@ -20,6 +20,7 @@ class CompareRequestExtractor(tk.Frame):
         self.compare_extract_modified_var = tk.BooleanVar(value=True)
         self.apply_by_request_col_var = tk.BooleanVar(value=True)
         self.save_to_db_var = tk.BooleanVar(value=True)
+        self.full_compare_results = [] 
 
         self.setup_ui()
         self._toggle_compare_source()
@@ -161,41 +162,51 @@ class CompareRequestExtractor(tk.Frame):
         self.parent_app.extraction_thread.start()
 
     def _display_results_in_tree(self, results):
+        # [수정] 전체 결과를 클래스 변수에 저장
+        self.full_compare_results = results
+
         self.result_tree.delete(*self.result_tree.get_children())
-        for row in results:
-            display_row = (row[0], row[1], row[2], row[3], row[8])
+        for row in self.full_compare_results: # results -> self.full_compare_results
+            # [수정] 변경된 데이터 구조에 맞게 주석과 인덱스 수정
+            # (file_name, sheet_name, string_id, kr, cn, tw, request_type, additional_info)
+            display_row = (row[0], row[1], row[2], row[3], row[6]) # 기존 row[8]에서 row[6]으로 변경
             self.result_tree.insert("", "end", values=display_row)
     
+    # tools/compare_request_extractor.py의 export_results 함수를 교체해주세요.
     def export_results(self):
-        # export 로직은 Basic Extractor와 동일하게 구현
-        db_path = self.parent_app.output_db_var.get()
+        """추출 결과를 엑셀로 내보내기 (로직 정리 및 버그 수정)"""
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel 파일", "*.xlsx")],
+            title="번역 요청 내보내기"
+        )
+        if not save_path:
+            return
+
+        # 'DB 저장' 옵션에 따라 데이터 소스를 결정
         if self.save_to_db_var.get():
+            db_path = self.parent_app.output_db_var.get()
             if not db_path or not os.path.exists(db_path):
                 show_message(self, "warning", "경고", "먼저 추출 작업을 실행하여 DB 파일을 생성해야 합니다.")
                 return
+            # DB에서 직접 엑셀로 내보내기
+            self.parent_app.extraction_manager.export_to_excel(db_path, save_path)
+
         else:
-            if not self.result_tree.get_children():
+            # 'DB 저장' 옵션을 껐을 경우, 메모리에 저장된 전체 결과를 사용
+            if not self.full_compare_results:
                 show_message(self, "warning", "경고", "먼저 추출 작업을 실행하여 결과를 확인해야 합니다.")
                 return
 
-        save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel 파일", "*.xlsx")], title="번역 요청 내보내기")
-        if not save_path: return
-
-        if self.save_to_db_var.get():
-            self.parent_app.extraction_manager.export_to_excel(db_path, save_path)
-        else:
-            items = [self.result_tree.item(child)['values'] for child in self.result_tree.get_children()]
-            if items:
+            try:
                 import pandas as pd
-                df = pd.DataFrame(items, columns=["file_name", "sheet_name", "string_id", "kr", "request_type"])
+                # 전체 컬럼 이름을 사용하여 DataFrame 생성
+                columns = ["file_name", "sheet_name", "string_id", "kr", "cn", "tw", "request_type", "additional_info"]
+                df = pd.DataFrame(self.full_compare_results, columns=columns)
                 df.to_excel(save_path, index=False)
                 show_message(self, "info", "완료", f"데이터를 엑셀로 내보냈습니다.\n파일: {save_path}")
-            else:
-                show_message(self, "info", "알림", "내보낼 데이터가 없습니다.")
-        db_path = self.parent_app.output_db_var.get()
-        if not db_path or not os.path.exists(db_path):
-            show_message(self, "warning", "경고", "먼저 추출 작업을 실행하여 DB 파일을 생성해야 합니다.")
-            return
+            except Exception as e:
+                show_message(self, "error", "엑셀 저장 오류", f"파일 저장 중 오류가 발생했습니다: {e}")
             
         save_path = filedialog.asksaveasfilename(
             defaultextension=".xlsx",

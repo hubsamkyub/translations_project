@@ -26,10 +26,11 @@ class RequestExtractionManager:
                 if os.path.exists(db_path): os.remove(db_path)
                 conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
+                # ▼▼▼ [수정 1-1] CREATE TABLE 구문에서 EN, TH 컬럼 제거 ▼▼▼
                 cursor.execute('''
                 CREATE TABLE translation_requests (
                     id INTEGER PRIMARY KEY, file_name TEXT, sheet_name TEXT,
-                    string_id TEXT, kr TEXT, en TEXT, cn TEXT, tw TEXT, th TEXT,
+                    string_id TEXT, kr TEXT, cn TEXT, tw TEXT,
                     request_type TEXT, additional_info TEXT
                 )''')
 
@@ -58,12 +59,13 @@ class RequestExtractionManager:
                             string_id = row[string_id_idx - 1] if string_id_idx and len(row) >= string_id_idx else ""
                             kr = row[list(headers.keys())[list(headers.values()).index("KR")] - 1] if "KR" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("KR")] else ""
                             
-                            en, cn, tw, th = "", "", "", ""
-                            if "EN" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("EN")]: en = row[list(headers.keys())[list(headers.values()).index("EN")]-1]
+                            # ▼▼▼ [수정 1-2] en, th 변수 추출 로직 제거 ▼▼▼
+                            cn, tw = "", ""
                             if "CN" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("CN")]: cn = row[list(headers.keys())[list(headers.values()).index("CN")]-1]
                             if "TW" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("TW")]: tw = row[list(headers.keys())[list(headers.values()).index("TW")]-1]
-                            if "TH" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("TH")]: th = row[list(headers.keys())[list(headers.values()).index("TH")]-1]
-                            extracted_data.append((file_name, sheet_name, string_id, kr, en, cn, tw, th, request_type, ""))
+                            
+                            # ▼▼▼ [수정 1-3] append 구문에서 en, th 변수 제거 ▼▼▼
+                            extracted_data.append((file_name, sheet_name, string_id, kr, cn, tw, request_type, ""))
 
                             if mark_as_transferred:
                                 if file_path not in files_to_update: files_to_update[file_path] = {}
@@ -73,7 +75,8 @@ class RequestExtractionManager:
 
             if save_to_db:
                 if extracted_data:
-                    cursor.executemany("INSERT INTO translation_requests (file_name, sheet_name, string_id, kr, en, cn, tw, th, request_type, additional_info) VALUES (?,?,?,?,?,?,?,?,?,?)", extracted_data)
+                    # ▼▼▼ [수정 1-4] INSERT 구문에서 en, th 컬럼 및 ? 플레이스홀더 제거 ▼▼▼
+                    cursor.executemany("INSERT INTO translation_requests (file_name, sheet_name, string_id, kr, cn, tw, request_type, additional_info) VALUES (?,?,?,?,?,?,?,?)", extracted_data)
                     conn.commit()
                 conn.close()
 
@@ -96,8 +99,6 @@ class RequestExtractionManager:
             loading_popup.close()
             show_message(self.parent_app.root, "error", "오류", f"추출 중 오류 발생: {e}")
             self.log(f"오류 발생: {e}")
-    # --- 비교 추출 로직 ---
-# tools/request_extraction_manager.py의 run_compare_extraction 함수 전체를 교체해주세요.
 
     def run_compare_extraction(self, selected_files, output_db_path, compare_options, save_to_db, completion_callback):
         """비교 추출 로직 실행"""
@@ -109,10 +110,11 @@ class RequestExtractionManager:
                 if os.path.exists(output_db_path): os.remove(output_db_path)
                 conn = sqlite3.connect(output_db_path)
                 cursor = conn.cursor()
+                # ▼▼▼ [수정 2-1] CREATE TABLE 구문에서 EN, TH 컬럼 제거 ▼▼▼
                 cursor.execute('''
                 CREATE TABLE translation_requests (
                     id INTEGER PRIMARY KEY, file_name TEXT, sheet_name TEXT,
-                    string_id TEXT, kr TEXT, en TEXT, cn TEXT, tw TEXT, th TEXT,
+                    string_id TEXT, kr TEXT, cn TEXT, tw TEXT,
                     request_type TEXT, additional_info TEXT
                 )''')
             
@@ -159,17 +161,19 @@ class RequestExtractionManager:
                             if source_kr != comparison_cache[string_id_str].get('kr', ""): request_type = "변경"
 
                         if request_type:
-                            en, cn, tw, th = "", "", "", ""
-                            if "EN" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("EN")]: en = row[list(headers.keys())[list(headers.values()).index("EN")]-1]
+                            # ▼▼▼ [수정 2-2] en, th 변수 추출 로직 제거 ▼▼▼
+                            cn, tw = "", ""
                             if "CN" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("CN")]: cn = row[list(headers.keys())[list(headers.values()).index("CN")]-1]
                             if "TW" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("TW")]: tw = row[list(headers.keys())[list(headers.values()).index("TW")]-1]
-                            if "TH" in headers.values() and len(row) >= list(headers.keys())[list(headers.values()).index("TH")]: th = row[list(headers.keys())[list(headers.values()).index("TH")]-1]
-                            extracted_data.append((file_name, sheet_name, string_id, source_kr, en, cn, tw, th, request_type, ""))
+                            
+                            # ▼▼▼ [수정 2-3] append 구문에서 en, th 변수 제거 ▼▼▼
+                            extracted_data.append((file_name, sheet_name, string_id, source_kr, cn, tw, request_type, ""))
                 wb.close()
 
             if save_to_db:
                 if extracted_data:
-                    cursor.executemany("INSERT INTO translation_requests (id, file_name, sheet_name, string_id, kr, en, cn, tw, th, request_type, additional_info) VALUES (NULL,?,?,?,?,?,?,?,?,?,?)", extracted_data)
+                    # ▼▼▼ [수정 2-4] INSERT 구문에서 en, th 컬럼 및 ? 플레이스홀더 제거 ▼▼▼
+                    cursor.executemany("INSERT INTO translation_requests (id, file_name, sheet_name, string_id, kr, cn, tw, request_type, additional_info) VALUES (NULL,?,?,?,?,?,?,?,?)", extracted_data)
                     conn.commit()
                 conn.close()
                 loading_popup.close()
@@ -186,7 +190,7 @@ class RequestExtractionManager:
             loading_popup.close()
             show_message(self.parent_app.root, "error", "오류", f"비교 추출 중 오류 발생: {e}")
             self.log(f"오류 발생: {e}")
-
+            
     def _load_comparison_data(self, compare_options):
         cache = {}
         source_type = compare_options['source_type']
